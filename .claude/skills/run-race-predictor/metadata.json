@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Race time predictor for runners (Riegel + VDOT) from best efforts.",
+  "tags": ["strava", "running", "race", "predictor", "riegel", "vdot"]
+}

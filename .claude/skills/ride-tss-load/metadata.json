@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Power-based TSS / NP / IF / VI per ride.",
+  "tags": ["strava", "cycling", "tss", "np", "if", "load"]
+}

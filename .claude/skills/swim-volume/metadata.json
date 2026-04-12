@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Swim volume per week / month with trend.",
+  "tags": ["strava", "swim", "volume"]
+}

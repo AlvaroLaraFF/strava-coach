@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Pace zones (Z1-Z5) for runners and recent distribution.",
+  "tags": ["strava", "running", "pace", "zones", "threshold"]
+}

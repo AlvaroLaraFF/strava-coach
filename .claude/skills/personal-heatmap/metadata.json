@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Personal training heatmap rendered as a self-contained HTML file.",
+  "tags": ["strava", "heatmap", "map", "visualization"]
+}

@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "All-time running PRs over standard distances with stale-PR alerts.",
+  "tags": ["strava", "running", "pr", "personal-record", "best-efforts"]
+}

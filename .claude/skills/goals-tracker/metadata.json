@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Set and track distance/time/elevation goals per week/month/year.",
+  "tags": ["strava", "goals", "targets", "tracker"]
+}

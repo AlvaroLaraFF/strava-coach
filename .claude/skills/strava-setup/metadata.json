@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Step-by-step setup wizard for strava-coach. Checks prerequisites, installs dependencies, and guides through Strava OAuth.",
+  "tags": ["strava", "setup", "wizard", "oauth2", "onboarding"]
+}

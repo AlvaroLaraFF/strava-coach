@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Skill to query Strava: recent activities, global stats, and AI-powered training proposals based on history.",
+  "tags": ["strava", "sport", "training", "running", "cycling", "oauth2"]
+}

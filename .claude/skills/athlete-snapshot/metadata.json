@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-13",
+  "abstract": "Compute and store a complete physiological profile snapshot, track metric evolution over time, and alert on significant changes.",
+  "tags": ["strava", "profile", "snapshot", "metrics", "ftp", "vdot", "threshold", "ctl", "atl", "tsb", "acwr", "alerts"]
+}
