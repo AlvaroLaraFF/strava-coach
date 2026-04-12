@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Climbing analysis: VAM, W/kg, hardest climbs.",
+  "tags": ["strava", "cycling", "climbing", "vam", "watts-per-kilo"]
+}

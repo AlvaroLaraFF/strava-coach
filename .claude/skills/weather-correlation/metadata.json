@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Correlate temperature with pace/HR via Open-Meteo Archive API.",
+  "tags": ["strava", "weather", "temperature", "correlation", "open-meteo"]
+}

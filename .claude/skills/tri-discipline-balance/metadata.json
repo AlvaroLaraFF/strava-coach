@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Triathlon discipline balance: time and volume per sport with gap detection.",
+  "tags": ["strava", "triathlon", "balance", "multi-sport"]
+}

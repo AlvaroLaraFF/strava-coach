@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "FTP estimate combining 20-min×0.95 and weighted_average_watts percentile.",
+  "tags": ["strava", "cycling", "ftp", "threshold", "power"]
+}

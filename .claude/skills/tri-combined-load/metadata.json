@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Combined triathlon PMC across run/ride/swim.",
+  "tags": ["strava", "triathlon", "ctl", "atl", "tsb", "multi-sport"]
+}

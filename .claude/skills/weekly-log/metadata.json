@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Weekly training log grouped by ISO week and sport.",
+  "tags": ["strava", "log", "weekly", "summary"]
+}

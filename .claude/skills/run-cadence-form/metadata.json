@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Running cadence and stride length trend over time.",
+  "tags": ["strava", "running", "cadence", "form", "stride"]
+}

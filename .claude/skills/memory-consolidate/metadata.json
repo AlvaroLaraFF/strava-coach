@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Audit and refresh project memory bank. HITL consolidation at session start or on demand.",
+  "tags": ["memory", "consolidation", "hitl", "session-start"]
+}

@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Critical Swim Speed estimator from 400m and 200m time trials.",
+  "tags": ["strava", "swim", "css", "threshold"]
+}

@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "CTL/ATL/TSB Performance Management Chart from local Strava history.",
+  "tags": ["strava", "training-load", "ctl", "atl", "tsb", "pmc", "fitness", "fatigue"]
+}

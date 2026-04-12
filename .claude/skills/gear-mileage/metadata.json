@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-12",
+  "abstract": "Cumulative distance per gear (shoes, bikes) with retirement alerts.",
+  "tags": ["strava", "gear", "shoes", "bikes", "mileage"]
+}
