@@ -24,7 +24,7 @@ should activate automatically — slash commands are not required.
 
 ## Skill catalog
 
-27 skills total. Each skill has its own folder under `.claude/skills/<name>/`
+28 skills total. Each skill has its own folder under `.claude/skills/<name>/`
 with a `SKILL.md`, a `metadata.json`, and a `scripts/` subfolder containing
 the Python CLI(s) it invokes. All scripts output JSON via the standard
 `output_json()` / `output_error()` helpers in `strava/client.py`.
@@ -49,6 +49,7 @@ the Python CLI(s) it invokes. All scripts output JSON via the standard
 | **consistency** | Streaks, frequency, weekly volume variability. |
 | **polarization-check** | Am I following the 80/20 polarized model? |
 | **goals-tracker** | Set and track distance/time/elevation goals per period. |
+| **training-plan** | Persist confirmed weekly plans; track adherence vs actual activities. |
 | **gear-mileage** | Distance per shoe / bike with retirement alerts. |
 | **personal-heatmap** | Render a Leaflet heatmap of all training locations. |
 
@@ -113,6 +114,9 @@ user to know slash commands. Examples:
 | "sync / refresh / pull from Strava" | strava-sync |
 | "refresh metrics / how have my metrics changed / my profile" | athlete-snapshot |
 | "refresh memory / what do you remember about me" | memory-consolidate |
+| "my plan this week / what's on today / my training plan" | training-plan list |
+| "adherence / how am I doing vs plan / did I complete this week" | training-plan review |
+| (after user confirms a weekly plan proposal) | training-plan add-bulk |
 
 If multiple skills could plausibly answer, pick the **most specific** one and
 mention briefly that you can also run the others.
@@ -144,6 +148,7 @@ strava/
 | `goals` | User-set goals (metric, period, sport, target) |
 | `user_profile` | Optional athlete info: name, height, weight, gender |
 | `athlete_snapshots` | Time-series physiological profile. Each row = timestamped snapshot of key metrics (FTP, VDOT, threshold pace, HR zones, CTL/ATL/TSB, ACWR, monotony, strain, decoupling, cadence). Append-only with merge — partial updates carry forward previous values. |
+| `planned_sessions` | Structured training plan. One row per planned session with target HR range, pace range, duration, distance, phase. Auto-linked to `activities.strava_id` when executed, so adherence is queryable. |
 
 ### Snapshot protocol — dynamic athlete profile
 
@@ -178,6 +183,25 @@ Recomputes all metrics in one pass. Used by the `athlete-snapshot` skill.
 Qualitative observations about the user's progression ("you've been
 overreaching since early April") still belong in **memory files**, not in the
 database. The snapshot stores numbers; memory stores coaching opinions.
+
+### Plan persistence protocol
+
+After agreeing on a weekly plan with the user, persist it through the
+`training-plan` skill (`add-bulk` with a JSON array on stdin). The
+`planned_sessions` table stores the structured plan; memory stores the
+qualitative narrative around it (e.g. "first quality block of the
+correction phase, watch for HR drift"). To amend a plan already stored,
+call `add-bulk` again with `--replace-range <monday> <sunday>` so the
+week is rewritten atomically. Never write raw plan numbers into memory
+— they go into the table or not at all.
+
+Every session persisted must carry an HR range (bpm) **and** a pace
+range (min/km). Sessions without both axes are rejected by the
+validator.
+
+Analysis skills that compare planned vs executed (`list`, `review`)
+auto-match past-dated rows to `activities` by same-day UTC + same sport
+and pick the closest-by-distance candidate.
 
 ---
 
@@ -227,11 +251,19 @@ relevance. Instead, read by type based on what the user is asking:
 | Asking general code/algorithm questions unrelated to user profile | NONE — just answer | "what's the Riegel formula?" |
 | About to make a recommendation that depends on user benchmarks | `user` (for qualitative context) + **re-run the skill** for live values | "what should my Z2 pace be?" |
 
-**Verification rule:** memory stores opinions, not data. When a recommendation
-needs a numeric value (FTP, threshold pace, max HR, CTL), **re-run the
-relevant skill** to get the live number from the DB. Never quote a numeric
-value from memory — it may be stale. Memory tells you *how to frame* the
-result; the skill tells you *what the result is*.
+**Verification rule — code is the single source of truth.** If the project
+contains a function, script, or skill that computes a value, **run it**.
+Never substitute the computation with general knowledge, training data,
+recalled formulas, intuition, or "I know the answer." This applies to
+every computable quantity in the project — not just training zones, but
+any number, classification, prediction, or derived metric that a script
+can produce. The code may implement a well-known formula (Karvonen,
+Daniels, Riegel, etc.) — even so, the code's output is authoritative
+because it uses the user's real parameters, not textbook defaults.
+
+Memory tells you *how to frame* the result; the code tells you *what the
+result is*. When two implementations exist for the same quantity, **run
+both**, show both, and justify the choice — never mix them silently.
 
 **Format for reading**: glob the `memory/` directory, parse frontmatter,
 filter by `type:`. Don't dump full contents into context unless you actually
@@ -364,6 +396,12 @@ You may chain at most ONCE per attempt, to avoid infinite loops.
 - **Memory is narrative, not a database.** Data lives in SQLite and is
   recomputed on demand. Memory stores only opinions, patterns, coaching
   notes, and validated decisions. See the Memory protocol section.
+- **Compute before proposing.** Before presenting any recommendation that
+  depends on a computable value, **run the code that computes it first**.
+  Build the proposal from the output, not from general knowledge. Never
+  draft a recommendation and validate it afterwards — the computation
+  comes first, the proposal second. See "Verification rule" in the
+  Memory access section.
 
 ---
 

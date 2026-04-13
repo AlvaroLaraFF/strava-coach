@@ -126,6 +126,31 @@ def init_db(db_path: str) -> None:
                 updated_at  TEXT DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS planned_sessions (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id          INTEGER NOT NULL,
+                plan_date           TEXT    NOT NULL,
+                sport_type          TEXT    NOT NULL,
+                session_type        TEXT    NOT NULL,
+                phase               TEXT,
+                duration_min        REAL,
+                distance_km         REAL,
+                hr_min_bpm          INTEGER,
+                hr_max_bpm          INTEGER,
+                pace_fast_min_km    REAL,
+                pace_slow_min_km    REAL,
+                description         TEXT,
+                notes               TEXT,
+                status              TEXT NOT NULL DEFAULT 'planned',
+                actual_strava_id    INTEGER,
+                created_at          TEXT DEFAULT (datetime('now')),
+                updated_at          TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_planned_sessions_athlete_date
+                ON planned_sessions(athlete_id, plan_date);
+            CREATE INDEX IF NOT EXISTS idx_planned_sessions_strava_id
+                ON planned_sessions(actual_strava_id);
+
             CREATE TABLE IF NOT EXISTS athlete_snapshots (
                 id                      INTEGER PRIMARY KEY AUTOINCREMENT,
                 athlete_id              INTEGER NOT NULL,
@@ -707,5 +732,153 @@ def get_snapshot_history(
         return [dict(r) for r in rows]
     except sqlite3.OperationalError:
         return []
+    finally:
+        conn.close()
+
+
+# --- Planned sessions ---
+
+_PLANNED_COLUMNS = [
+    "plan_date", "sport_type", "session_type", "phase",
+    "duration_min", "distance_km", "hr_min_bpm", "hr_max_bpm",
+    "pace_fast_min_km", "pace_slow_min_km", "description", "notes",
+    "status", "actual_strava_id",
+]
+
+
+def upsert_planned_session(
+    db_path: str, athlete_id: int, session: dict
+) -> int:
+    """Insert a planned session, or update it if session['id'] is given."""
+    conn = _connect(db_path)
+    try:
+        if session.get("id"):
+            fields = {k: session[k] for k in _PLANNED_COLUMNS if k in session}
+            set_clause = ", ".join(f"{k} = ?" for k in fields)
+            params = list(fields.values()) + [session["id"]]
+            conn.execute(
+                f"UPDATE planned_sessions SET {set_clause}, "
+                f"updated_at = datetime('now') WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            return int(session["id"])
+
+        cur = conn.execute(
+            """INSERT INTO planned_sessions
+               (athlete_id, plan_date, sport_type, session_type, phase,
+                duration_min, distance_km, hr_min_bpm, hr_max_bpm,
+                pace_fast_min_km, pace_slow_min_km, description, notes,
+                status, actual_strava_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                athlete_id,
+                session["plan_date"],
+                session["sport_type"],
+                session["session_type"],
+                session.get("phase"),
+                session.get("duration_min"),
+                session.get("distance_km"),
+                session.get("hr_min_bpm"),
+                session.get("hr_max_bpm"),
+                session.get("pace_fast_min_km"),
+                session.get("pace_slow_min_km"),
+                session.get("description"),
+                session.get("notes"),
+                session.get("status", "planned"),
+                session.get("actual_strava_id"),
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_planned_sessions(
+    db_path: str, athlete_id: int, start: str, end: str
+) -> list[dict]:
+    """Return planned sessions in [start, end] (inclusive), ordered by date."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT * FROM planned_sessions
+               WHERE athlete_id = ?
+                 AND plan_date BETWEEN ? AND ?
+               ORDER BY plan_date ASC, id ASC""",
+            (athlete_id, start, end),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def update_planned_session(db_path: str, session_id: int, **fields) -> None:
+    """Partial update on a planned session. Unknown keys are ignored."""
+    allowed = {k: v for k, v in fields.items() if k in _PLANNED_COLUMNS}
+    if not allowed:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in allowed)
+    params = list(allowed.values()) + [session_id]
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            f"UPDATE planned_sessions SET {set_clause}, "
+            f"updated_at = datetime('now') WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_planned_session(db_path: str, session_id: int) -> None:
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "DELETE FROM planned_sessions WHERE id = ?", (session_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_planned_range(
+    db_path: str, athlete_id: int, start: str, end: str
+) -> int:
+    """Delete all planned sessions for athlete in [start, end]. Returns count."""
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            """DELETE FROM planned_sessions
+               WHERE athlete_id = ?
+                 AND plan_date BETWEEN ? AND ?""",
+            (athlete_id, start, end),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def link_planned_to_activity(
+    db_path: str,
+    session_id: int,
+    strava_id: int | None,
+    status: str = "completed",
+) -> None:
+    """Mark a planned session as completed/skipped and link the real activity."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            """UPDATE planned_sessions
+               SET actual_strava_id = ?, status = ?,
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (strava_id, status, session_id),
+        )
+        conn.commit()
     finally:
         conn.close()
