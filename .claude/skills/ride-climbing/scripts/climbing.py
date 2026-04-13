@@ -10,7 +10,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from strava.analytics import vam, watts_per_kg
 from strava.client import get_default_db_path, output_error, output_json
-from strava.db import get_activities_range
+from strava.db import get_activities_range, load_laps, load_user_profile
 
 
 RIDE_TYPES = {"Ride", "VirtualRide", "GravelRide", "MountainBikeRide", "EBikeRide"}
@@ -19,11 +19,14 @@ RIDE_TYPES = {"Ride", "VirtualRide", "GravelRide", "MountainBikeRide", "EBikeRid
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--days", type=int, default=90)
-    p.add_argument("--weight-kg", type=float, default=70.0)
+    p.add_argument("--weight-kg", type=float, default=None, help="rider weight in kg (loaded from profile if not set)")
     args = p.parse_args()
 
     try:
         db = get_default_db_path()
+
+        profile = load_user_profile(db)
+        weight = args.weight_kg or (profile.get("weight_kg") if profile else None) or 70.0
         rides = [a for a in get_activities_range(db, days=args.days)
                  if a.get("sport_type") in RIDE_TYPES]
         rides_prev = [a for a in get_activities_range(db, days=args.days * 2)
@@ -38,7 +41,27 @@ def main() -> None:
             if elev < 100:
                 continue
             v = vam(elev, duration)
-            wkg = watts_per_kg(r.get("average_watts") or 0, args.weight_kg)
+            wkg = watts_per_kg(r.get("average_watts") or 0, weight)
+
+            # Per-segment VAM from laps
+            segment_vams = []
+            try:
+                laps = load_laps(db, r["strava_id"])
+                if laps:
+                    for lap in laps:
+                        lap_elev = lap.get("total_elevation_gain") or 0
+                        lap_dur = lap.get("elapsed_time") or 0
+                        if lap_elev >= 20 and lap_dur > 0:
+                            seg_vam = vam(lap_elev, lap_dur)
+                            segment_vams.append({
+                                "lap_index": lap.get("lap_index"),
+                                "elevation_m": round(lap_elev, 1),
+                                "duration_s": lap_dur,
+                                "vam_m_h": seg_vam,
+                            })
+            except Exception:
+                pass
+
             rows.append({
                 "date": (r.get("start_date") or "")[:10],
                 "name": r.get("name"),
@@ -48,6 +71,7 @@ def main() -> None:
                 "vam_m_h": v,
                 "avg_watts": round(r.get("average_watts") or 0, 0),
                 "w_per_kg": wkg,
+                "segment_vams": segment_vams,
             })
 
         if not rows:
@@ -72,7 +96,7 @@ def main() -> None:
             "trend_vs_previous_window": trend,
             "previous_window_avg_vam": prev_avg,
             "top_rides": top_vam,
-            "weight_kg_used": args.weight_kg,
+            "weight_kg_used": weight,
             "rides_analyzed": len(rows),
         })
     except Exception as e:

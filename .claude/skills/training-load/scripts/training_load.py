@@ -20,10 +20,10 @@ from strava.analytics import (
     tss,
 )
 from strava.client import get_default_db_path, output_error, output_json
-from strava.db import get_activities_range
+from strava.db import get_activities_range, load_user_profile
 
 
-def daily_load_from_activity(act: dict, ftp: float, hr_max: float, hr_rest: float) -> float:
+def daily_load_from_activity(act: dict, ftp: float, hr_max: float, hr_rest: float, sex: str = "M") -> float:
     """Single number representing today's training stress for one activity."""
     avg_w = act.get("average_watts") or 0
     duration_s = act.get("moving_time") or 0
@@ -32,7 +32,7 @@ def daily_load_from_activity(act: dict, ftp: float, hr_max: float, hr_rest: floa
         return tss(duration_s, avg_w, intensity, ftp)
     avg_hr = act.get("average_hr") or 0
     if avg_hr and duration_s:
-        return banister_trimp(duration_s / 60, avg_hr, hr_rest, hr_max)
+        return banister_trimp(duration_s / 60, avg_hr, hr_rest, hr_max, sex)
     return 0.0
 
 
@@ -42,10 +42,15 @@ def main() -> None:
     p.add_argument("--ftp", type=float, default=200.0)
     p.add_argument("--hr-max", type=float, default=190.0)
     p.add_argument("--hr-rest", type=float, default=55.0)
+    p.add_argument("--gender", type=str, default=None, help="M or F (loaded from profile if not set)")
     args = p.parse_args()
 
     try:
         db = get_default_db_path()
+
+        profile = load_user_profile(db)
+        sex = args.gender or (profile.get("gender") if profile else None) or "M"
+
         activities = get_activities_range(db, days=args.days)
         if not activities:
             output_error("No activities found in the local DB. Sync first.")
@@ -56,7 +61,7 @@ def main() -> None:
             if not sd:
                 continue
             day = parse_iso(sd).strftime("%Y-%m-%d")
-            per_day[day] += daily_load_from_activity(a, args.ftp, args.hr_max, args.hr_rest)
+            per_day[day] += daily_load_from_activity(a, args.ftp, args.hr_max, args.hr_rest, sex)
 
         if not per_day:
             output_error("No usable HR or power data in the activities.")

@@ -1,6 +1,6 @@
 # strava-coach
 
-An AI-powered personal endurance coach built on [Claude Code](https://claude.com/claude-code) and the Strava API. Ask questions in plain English about your training — fitness, fatigue, race readiness, PRs, pace zones, power curves, swim efficiency — and get data-driven, coach-quality answers instantly.
+An AI-powered personal endurance coach built on [Claude Code](https://claude.com/claude-code) and the Strava API. Ask questions about your training — fitness, fatigue, race readiness, PRs, pace zones, power curves, swim efficiency — and get data-driven, coach-quality answers instantly.
 
 ## Philosophy
 
@@ -51,7 +51,7 @@ The setup wizard checks Python, installs dependencies, initializes the database,
 strava-coach/
 ├── strava/                     # Shared Python library
 │   ├── client.py               #   Strava API client (OAuth2, retry, rate limiting)
-│   ├── db.py                   #   SQLite schema (10 tables) + helpers
+│   ├── db.py                   #   SQLite schema (11 tables) + helpers
 │   ├── analytics.py            #   Pure-function sports-science formulas (~25 algorithms)
 │   └── sync.py                 #   Incremental sync orchestration
 │

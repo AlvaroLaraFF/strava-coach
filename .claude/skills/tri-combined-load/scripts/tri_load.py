@@ -12,12 +12,13 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from strava.analytics import (
     banister_trimp,
+    normalized_power,
     parse_iso,
     pmc_series,
     tss,
 )
 from strava.client import get_default_db_path, output_error, output_json
-from strava.db import get_activities_range
+from strava.db import get_activities_range, load_streams, load_user_profile
 
 
 SPORT_GROUP = {
@@ -34,10 +35,15 @@ def main() -> None:
     p.add_argument("--ftp", type=float, default=200.0)
     p.add_argument("--hr-max", type=float, default=190.0)
     p.add_argument("--hr-rest", type=float, default=55.0)
+    p.add_argument("--gender", type=str, default=None, help="M or F (loaded from profile if not set)")
     args = p.parse_args()
 
     try:
         db = get_default_db_path()
+
+        profile = load_user_profile(db)
+        sex = args.gender or (profile.get("gender") if profile else None) or "M"
+
         activities = [a for a in get_activities_range(db, days=args.days)
                       if SPORT_GROUP.get(a.get("sport_type") or "")]
         if not activities:
@@ -57,9 +63,19 @@ def main() -> None:
             avg_hr = a.get("average_hr") or 0
 
             if sport == "ride" and avg_w and args.ftp and duration_s:
-                load = tss(duration_s, avg_w, avg_w / args.ftp, args.ftp)
+                np_val = avg_w
+                streams = load_streams(db, a.get("strava_id"))
+                if streams and "watts" in streams:
+                    watts_data = streams["watts"]
+                    if isinstance(watts_data, dict):
+                        watts_data = watts_data.get("data", [])
+                    np_calc = normalized_power(watts_data)
+                    if np_calc > 0:
+                        np_val = np_calc
+                i_f = np_val / args.ftp
+                load = tss(duration_s, np_val, i_f, args.ftp)
             elif avg_hr and duration_s:
-                load = banister_trimp(duration_s / 60, avg_hr, args.hr_rest, args.hr_max)
+                load = banister_trimp(duration_s / 60, avg_hr, args.hr_rest, args.hr_max, sex)
             else:
                 load = 0.0
 
@@ -93,6 +109,7 @@ def main() -> None:
             "dominant_sport_7d": dominant,
             "series_last_30d": series[-30:],
             "params": {"ftp": args.ftp, "hr_max": args.hr_max, "hr_rest": args.hr_rest},
+            "load_note": "TRIMP (HR) and TSS (power) combined without scaling — interpret with caution",
         })
     except Exception as e:
         output_error(f"{type(e).__name__}: {e}")

@@ -140,6 +140,7 @@ strava/
 | `best_efforts` | Normalized PRs over standard run distances |
 | `daily_load` | Per-day training load (for PMC reuse) |
 | `goals` | User-set goals (metric, period, sport, target) |
+| `user_profile` | Optional athlete info: name, height, weight, gender |
 
 ### No snapshot table — progression lives in memory
 
