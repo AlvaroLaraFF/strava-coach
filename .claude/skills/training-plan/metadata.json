@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-13",
+  "abstract": "Persist confirmed weekly training plans and measure adherence against executed activities.",
+  "tags": ["strava", "plan", "adherence", "training", "weekly"]
+}
