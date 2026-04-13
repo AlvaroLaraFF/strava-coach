@@ -198,7 +198,40 @@ python3 /home/alfernandez/PycharmProjects/strava-coach/scripts/list_activities.p
 
 ---
 
-## Step 7: Summary
+## Step 7: User profile (optional)
+
+Ask the user for basic profile data. **All fields are optional** — the user can skip any or all of them. Explain that having this data improves the accuracy of training analytics (e.g., W/kg calculations need weight, TRIMP uses gender-specific coefficients).
+
+Fields to ask for:
+- **Name** — display name
+- **Height** — in cm
+- **Weight** — in kg
+- **Gender** — M or F
+
+If the user provides at least one field, save the profile:
+
+```bash
+python3 /home/alfernandez/PycharmProjects/strava-coach/scripts/save_profile.py --name "<name>" --height <cm> --weight <kg> --gender <M|F>
+```
+
+Only include flags for fields the user actually provided. If the user skips everything, proceed without saving.
+
+If the user already has a profile (e.g., re-running setup), show the current values and ask if they want to update anything:
+
+```bash
+python3 -c "
+import sys, json
+sys.path.insert(0, '/home/alfernandez/PycharmProjects/strava-coach')
+from strava.db import load_user_profile
+from strava.client import get_default_db_path
+p = load_user_profile(get_default_db_path())
+print(json.dumps(p) if p else 'NO_PROFILE')
+"
+```
+
+---
+
+## Step 8: Summary
 
 Present a final checklist:
 
@@ -211,11 +244,9 @@ Setup complete!
   [x] .env .................. configured
   [x] OAuth token ........... authorized
   [x] Connection ............ verified
+  [x] Profile ............... saved (or: skipped)
 
-You can now use /strava-coach to:
-  - View your recent activities
-  - Check your global statistics
-  - Get AI-powered training proposals
+You can now ask about your training — fitness, race predictions, pace zones, and more.
 ```
 
 ---

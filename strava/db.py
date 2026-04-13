@@ -116,6 +116,15 @@ def init_db(db_path: str) -> None:
                 created_at  TEXT DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS user_profile (
+                athlete_id  INTEGER PRIMARY KEY,
+                name        TEXT,
+                height_cm   REAL,
+                weight_kg   REAL,
+                gender      TEXT,
+                updated_at  TEXT DEFAULT (datetime('now'))
+            );
+
         """)
         conn.commit()
     finally:
@@ -402,13 +411,19 @@ def get_best_efforts_pr(db_path: str, athlete_id: int) -> list[dict]:
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            """SELECT effort_name, distance, MIN(elapsed_time) AS pr_time,
-                      strava_id, start_date
-               FROM best_efforts
-               WHERE athlete_id = ?
-               GROUP BY effort_name
-               ORDER BY distance ASC""",
-            (athlete_id,),
+            """SELECT be.effort_name, be.distance, be.elapsed_time AS pr_time,
+                      be.strava_id, be.start_date
+               FROM best_efforts be
+               INNER JOIN (
+                   SELECT effort_name, MIN(elapsed_time) AS min_time
+                   FROM best_efforts
+                   WHERE athlete_id = ?
+                   GROUP BY effort_name
+               ) sub ON be.effort_name = sub.effort_name
+                     AND be.elapsed_time = sub.min_time
+               WHERE be.athlete_id = ?
+               ORDER BY be.distance ASC""",
+            (athlete_id, athlete_id),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -481,6 +496,66 @@ def list_goals(db_path: str, athlete_id: int) -> list[dict]:
             (athlete_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# --- User profile ---
+
+def save_user_profile(db_path: str, athlete_id: int, profile: dict) -> None:
+    """Upsert user profile fields. Only updates non-None values."""
+    conn = _connect(db_path)
+    try:
+        existing = conn.execute(
+            "SELECT * FROM user_profile WHERE athlete_id = ?", (athlete_id,)
+        ).fetchone()
+        if existing:
+            existing = dict(existing)
+            merged = {
+                "name": profile.get("name") or existing.get("name"),
+                "height_cm": profile.get("height_cm") or existing.get("height_cm"),
+                "weight_kg": profile.get("weight_kg") or existing.get("weight_kg"),
+                "gender": profile.get("gender") or existing.get("gender"),
+            }
+            conn.execute(
+                """UPDATE user_profile
+                   SET name = ?, height_cm = ?, weight_kg = ?, gender = ?,
+                       updated_at = datetime('now')
+                   WHERE athlete_id = ?""",
+                (merged["name"], merged["height_cm"], merged["weight_kg"],
+                 merged["gender"], athlete_id),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO user_profile
+                   (athlete_id, name, height_cm, weight_kg, gender)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (athlete_id, profile.get("name"), profile.get("height_cm"),
+                 profile.get("weight_kg"), profile.get("gender")),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_user_profile(db_path: str, athlete_id: int | None = None) -> dict | None:
+    """Return the user profile or None. If athlete_id is None, returns the first profile found.
+
+    Returns None gracefully if the user_profile table does not exist yet.
+    """
+    conn = _connect(db_path)
+    try:
+        if athlete_id:
+            row = conn.execute(
+                "SELECT * FROM user_profile WHERE athlete_id = ?", (athlete_id,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM user_profile ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
