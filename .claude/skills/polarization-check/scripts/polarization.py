@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""80/20 polarization check from HR zones."""
+"""80/20 polarization check from HR zones (Seiler model)."""
 
 import argparse
+import json
 import os
 import sys
 
@@ -10,23 +11,59 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from strava.analytics import classify_polarization
 from strava.client import get_default_db_path, output_error, output_json
-from strava.db import get_activities_range
+from strava.db import get_activities_range, load_streams
+
+
+def _enrich_with_stream_zones(activities: list[dict], db: str,
+                               easy_hr: float, hard_hr: float) -> list[dict]:
+    """Try to add per-second time-in-zone data from HR streams."""
+    for a in activities:
+        sid = a.get("strava_id")
+        if not sid:
+            continue
+        streams = load_streams(db, sid)
+        if not streams or "heartrate" not in streams:
+            continue
+        hr_data = streams["heartrate"]
+        if isinstance(hr_data, dict):
+            hr_data = hr_data.get("data", [])
+        if not hr_data or not isinstance(hr_data, list):
+            continue
+        easy_s = mod_s = hard_s = 0
+        for hr in hr_data:
+            if not hr:
+                continue
+            if hr < easy_hr:
+                easy_s += 1
+            elif hr < hard_hr:
+                mod_s += 1
+            else:
+                hard_s += 1
+        if easy_s + mod_s + hard_s > 0:
+            a["time_in_zones_s"] = [float(easy_s), float(mod_s), float(hard_s)]
+    return activities
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--days", type=int, default=30)
     p.add_argument("--hr-max", type=float, default=190.0)
+    p.add_argument("--hr-rest", type=float, default=55.0)
     args = p.parse_args()
 
     try:
-        easy_threshold = args.hr_max * 0.78
-        hard_threshold = args.hr_max * 0.88
+        # VT1/VT2 proxies via Karvonen (HRreserve) — Seiler model
+        hr_reserve = args.hr_max - args.hr_rest
+        easy_threshold = args.hr_rest + 0.75 * hr_reserve   # VT1 proxy
+        hard_threshold = args.hr_rest + 0.88 * hr_reserve   # VT2 proxy
 
         db = get_default_db_path()
-        activities = get_activities_range(db, days=args.days)
+        activities = list(get_activities_range(db, days=args.days))
         if not activities:
             output_error("No activities found.")
+
+        # Enrich with per-second HR stream data when available
+        activities = _enrich_with_stream_zones(activities, db, easy_threshold, hard_threshold)
 
         result = classify_polarization(activities, easy_threshold, hard_threshold)
 
@@ -50,7 +87,12 @@ def main() -> None:
         output_json({
             "verdict": verdict,
             "advice": advice,
-            "thresholds_bpm": {"easy_below": round(easy_threshold), "hard_above": round(hard_threshold)},
+            "thresholds_bpm": {
+                "easy_below": round(easy_threshold),
+                "hard_above": round(hard_threshold),
+                "hr_rest_used": args.hr_rest,
+                "method": "karvonen_hrreserve",
+            },
             "distribution": result,
             "window_days": args.days,
         })

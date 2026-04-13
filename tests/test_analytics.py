@@ -20,6 +20,7 @@ from strava.analytics import (
     classify_polarization,
     css_estimate,
     estimate_ftp_from_mmp,
+    ewma_acwr,
     fmt_duration,
     fmt_pace,
     grade_adjusted_pace,
@@ -38,6 +39,7 @@ from strava.analytics import (
     vam,
     variability_index,
     vdot_from_5k,
+    vdot_to_threshold_pace,
     watts_per_kg,
 )
 
@@ -85,7 +87,8 @@ class TestTrimp(unittest.TestCase):
         m = banister_trimp(60, 160, 50, 190, "M")
         f = banister_trimp(60, 160, 50, 190, "F")
         self.assertNotEqual(m, f)
-        self.assertGreater(m, f)
+        # Female uses coeff 0.86 (vs male 0.64), so female TRIMP > male
+        self.assertGreater(f, m)
 
     def test_zero_duration_returns_zero(self):
         self.assertEqual(banister_trimp(0, 150, 50, 190), 0.0)
@@ -565,7 +568,8 @@ class TestFTPEstimate(unittest.TestCase):
 
     def test_5min_fallback(self):
         ftp = estimate_ftp_from_mmp({300: 350})
-        self.assertAlmostEqual(ftp, 322.0, delta=2)
+        # 0.75 × 350 = 262.5, rounded to 262.0 (Allen & Coggan)
+        self.assertAlmostEqual(ftp, 262.0, delta=2)
 
     def test_20min_takes_priority_over_5min(self):
         ftp = estimate_ftp_from_mmp({300: 400, 1200: 300})
@@ -576,6 +580,53 @@ class TestFTPEstimate(unittest.TestCase):
 
     def test_zero_values(self):
         self.assertEqual(estimate_ftp_from_mmp({1200: 0}), 0.0)
+
+
+class TestEWMAACWR(unittest.TestCase):
+    def test_steady_state_near_one(self):
+        loads = [50.0] * 28
+        ratio = ewma_acwr(loads)
+        self.assertAlmostEqual(ratio, 1.0, delta=0.2)
+
+    def test_spike_raises_acwr(self):
+        loads = [50.0] * 21 + [150.0] * 7
+        ratio = ewma_acwr(loads)
+        self.assertGreater(ratio, 1.3)
+
+    def test_taper_lowers_acwr(self):
+        loads = [100.0] * 21 + [20.0] * 7
+        ratio = ewma_acwr(loads)
+        self.assertLess(ratio, 0.8)
+
+    def test_empty_returns_zero(self):
+        self.assertEqual(ewma_acwr([]), 0.0)
+
+    def test_all_zeros(self):
+        self.assertEqual(ewma_acwr([0.0] * 28), 0.0)
+
+    def test_works_with_short_series(self):
+        # Unlike rolling ACWR which needs >=28 days, EWMA works from day 1
+        ratio = ewma_acwr([100.0] * 7)
+        self.assertGreater(ratio, 0.0)
+
+
+class TestVDOTThresholdPace(unittest.TestCase):
+    def test_higher_vdot_means_faster_pace(self):
+        slow = vdot_to_threshold_pace(30)
+        fast = vdot_to_threshold_pace(50)
+        self.assertGreater(slow, fast)
+
+    def test_vdot_50_in_expected_range(self):
+        # VDOT 50 T-pace should be roughly 4:00-4:30 min/km
+        pace = vdot_to_threshold_pace(50)
+        self.assertGreater(pace, 3.8)
+        self.assertLess(pace, 4.8)
+
+    def test_zero_returns_zero(self):
+        self.assertEqual(vdot_to_threshold_pace(0), 0.0)
+
+    def test_returns_float(self):
+        self.assertIsInstance(vdot_to_threshold_pace(40), float)
 
 
 if __name__ == "__main__":

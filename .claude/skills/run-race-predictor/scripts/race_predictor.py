@@ -43,7 +43,11 @@ def main() -> None:
         recent = [r for r in prs if r["start_date"] and parse_iso(r["start_date"]) >= recent_cutoff]
         pool = recent or prs
 
-        anchor = max(pool, key=lambda r: r["distance"] or 0)
+        preferred = [r for r in pool if r.get("effort_name", "").upper() in ("5K", "10K")]
+        if preferred:
+            anchor = min(preferred, key=lambda r: r["pr_time"] / r["distance"])
+        else:
+            anchor = min(pool, key=lambda r: r["pr_time"] / r["distance"])
 
         five_k = next((r for r in pool if (r["effort_name"] or "").lower() == "5k"), None)
         vdot = vdot_from_5k(five_k["pr_time"]) if five_k else None

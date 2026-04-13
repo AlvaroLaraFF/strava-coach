@@ -22,6 +22,7 @@ def main() -> None:
     p.add_argument("--min-minutes", type=int, default=60)
     p.add_argument("--max-runs", type=int, default=5)
     p.add_argument("--days", type=int, default=90)
+    p.add_argument("--hr-max", type=float, default=190.0)
     args = p.parse_args()
 
     try:
@@ -30,7 +31,11 @@ def main() -> None:
 
         activities = [a for a in get_activities_range(db, days=args.days)
                       if a.get("sport_type") in RUN_TYPES
-                      and (a.get("moving_time") or 0) >= args.min_minutes * 60]
+                      and (a.get("moving_time") or 0) >= args.min_minutes * 60
+                      and (
+                          not a.get("average_hr")
+                          or a["average_hr"] <= args.hr_max * 0.85
+                      )]
         if not activities:
             output_error(f"No runs >{args.min_minutes} minutes in the last {args.days} days.")
 

@@ -2,6 +2,7 @@
 """SWOLF trend per pool swim."""
 
 import argparse
+import json
 import os
 import sys
 
@@ -17,6 +18,7 @@ from strava.sync import ensure_laps
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--days", type=int, default=60)
+    p.add_argument("--pool-length", type=int, default=25)
     args = p.parse_args()
 
     try:
@@ -30,6 +32,12 @@ def main() -> None:
         sessions = []
         for s in swims:
             try:
+                raw = json.loads(s.get("raw_json") or "{}")
+            except ValueError:
+                raw = {}
+            pool_m = raw.get("pool_length") or args.pool_length
+
+            try:
                 laps = ensure_laps(client, db, s["strava_id"])
             except Exception:
                 continue
@@ -42,7 +50,10 @@ def main() -> None:
                 if not t or not cad:
                     continue
                 strokes = round(cad * (t / 60.0))
-                swolfs.append(swolf(t, strokes))
+                raw_swolf = swolf(t, strokes)
+                # Normalize to 25m equivalent
+                normalized = raw_swolf * (25.0 / pool_m) if pool_m != 25 else raw_swolf
+                swolfs.append(normalized)
             if not swolfs:
                 continue
             avg = sum(swolfs) / len(swolfs)
@@ -52,6 +63,7 @@ def main() -> None:
                 "distance_m": s.get("distance"),
                 "average_swolf": round(avg, 1),
                 "laps_used": len(swolfs),
+                "pool_length_m": pool_m,
             })
 
         if not sessions:

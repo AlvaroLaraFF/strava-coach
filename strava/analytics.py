@@ -18,6 +18,8 @@ from typing import Iterable
 def parse_iso(s: str) -> datetime:
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
+    elif "T" not in s:
+        s = s + "T00:00:00+00:00"
     return datetime.fromisoformat(s)
 
 
@@ -53,7 +55,8 @@ def banister_trimp(
         return 0.0
     hrr = hr_reserve_fraction(avg_hr, hr_rest, hr_max)
     k = 1.92 if sex.upper().startswith("M") else 1.67
-    return duration_min * hrr * 0.64 * math.exp(k * hrr)
+    coeff = 0.64 if sex.upper().startswith("M") else 0.86
+    return duration_min * hrr * coeff * math.exp(k * hrr)
 
 
 def relative_effort_from_zones(time_in_zone_s: list[float]) -> float:
@@ -171,6 +174,26 @@ def vdot_from_5k(time_s: float) -> float:
     return round(vo2 / pct_vo2max, 1)
 
 
+def vdot_to_threshold_pace(vdot: float) -> float:
+    """Threshold pace in min/km from VDOT (Daniels T-pace at ~88% VO2max).
+
+    Inverts: vo2 = -4.6 + 0.182258*v + 0.000104*v^2  (v in m/min)
+    at vo2 = 0.88 * vdot.
+    """
+    if not vdot:
+        return 0.0
+    a = 0.000104
+    b = 0.182258
+    c = -(4.6 + 0.88 * vdot)
+    disc = b * b - 4 * a * c
+    if disc < 0:
+        return 0.0
+    v_m_per_min = (-b + math.sqrt(disc)) / (2 * a)
+    if v_m_per_min <= 0:
+        return 0.0
+    return round(1000.0 / v_m_per_min, 3)
+
+
 # ---------------------------------------------------------------------------
 # Mean-max curves (rolling max for power or pace)
 # ---------------------------------------------------------------------------
@@ -201,7 +224,7 @@ def estimate_ftp_from_mmp(mmp: dict[int, float]) -> float:
     if 1200 in mmp and mmp[1200] > 0:
         return round(mmp[1200] * 0.95, 0)
     if 300 in mmp and mmp[300] > 0:
-        return round(mmp[300] * 0.92, 0)
+        return round(mmp[300] * 0.75, 0)
     return 0.0
 
 
@@ -246,7 +269,7 @@ def pmc_series(daily_loads: list[tuple[str, float]]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def acute_chronic_ratio(daily_loads: list[float]) -> float:
-    """Acute (last 7d) divided by chronic (last 28d) load."""
+    """Acute (last 7d) divided by chronic (last 28d) load — rolling average."""
     if len(daily_loads) < 28:
         return 0.0
     acute = sum(daily_loads[-7:]) / 7.0
@@ -254,6 +277,25 @@ def acute_chronic_ratio(daily_loads: list[float]) -> float:
     if chronic == 0:
         return 0.0
     return round(acute / chronic, 2)
+
+
+def ewma_acwr(daily_loads: list[float]) -> float:
+    """EWMA-based ACWR (Hulin 2016 / Williams 2017).
+
+    Uses exponential decay: alpha_acute = 2/(7+1), alpha_chronic = 2/(28+1).
+    More sensitive to load spikes than rolling averages.
+    """
+    if not daily_loads:
+        return 0.0
+    alpha_a = 2.0 / (7 + 1)
+    alpha_c = 2.0 / (28 + 1)
+    ewma_a = ewma_c = 0.0
+    for load in daily_loads:
+        ewma_a = alpha_a * load + (1 - alpha_a) * ewma_a
+        ewma_c = alpha_c * load + (1 - alpha_c) * ewma_c
+    if ewma_c == 0:
+        return 0.0
+    return round(ewma_a / ewma_c, 2)
 
 
 def monotony(daily_loads: list[float]) -> float:
@@ -306,9 +348,24 @@ def aerobic_decoupling(power_or_pace: list[float], hr: list[float]) -> float:
 def classify_polarization(
     activities: Iterable[dict], easy_hr: float, hard_hr: float
 ) -> dict:
-    """Bucket activity time into easy / moderate / hard based on average HR."""
+    """Bucket activity time into easy / moderate / hard.
+
+    If an activity has a ``time_in_zones_s`` key (list of three floats:
+    [easy_s, moderate_s, hard_s] derived from per-second HR streams), that
+    is used for accurate second-by-second classification.  Otherwise falls
+    back to classifying the entire session by its average HR (less accurate
+    for interval workouts).
+    """
     easy_s = mod_s = hard_s = 0
+    stream_count = avg_count = 0
     for a in activities:
+        tiz = a.get("time_in_zones_s")
+        if tiz and len(tiz) == 3:
+            easy_s += tiz[0]
+            mod_s += tiz[1]
+            hard_s += tiz[2]
+            stream_count += 1
+            continue
         hr = a.get("average_hr") or 0
         t = a.get("moving_time") or 0
         if not hr or not t:
@@ -319,14 +376,19 @@ def classify_polarization(
             mod_s += t
         else:
             hard_s += t
+        avg_count += 1
     total = easy_s + mod_s + hard_s
     if total == 0:
-        return {"easy_pct": 0, "moderate_pct": 0, "hard_pct": 0, "total_min": 0}
+        return {"easy_pct": 0, "moderate_pct": 0, "hard_pct": 0, "total_min": 0,
+                "method": "none", "stream_activities": 0, "avg_hr_activities": 0}
     return {
         "easy_pct": round(easy_s / total * 100, 1),
         "moderate_pct": round(mod_s / total * 100, 1),
         "hard_pct": round(hard_s / total * 100, 1),
         "total_min": round(total / 60, 1),
+        "method": "stream" if stream_count > avg_count else "avg_hr",
+        "stream_activities": stream_count,
+        "avg_hr_activities": avg_count,
     }
 
 
