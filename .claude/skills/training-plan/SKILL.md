@@ -103,6 +103,74 @@ still requires the keys to be present. If the user has no reference pace
 yet for a given intensity, pass a wide provisional range, never omit one
 of the two axes.
 
+## Structured blocks (REQUIRED for any session with internal structure)
+
+Any session that is not a single steady effort — warmups, intervals,
+fartlek, tempo with recovery, progression runs, long runs with finish
+surges — MUST be persisted with its `blocks` array. The session-level
+HR and pace ranges stay as the envelope for the Strava matcher; the
+blocks carry the actual targets the athlete reads on the watch.
+
+Each block is an object with:
+
+- `block_type` — one of `warmup | work | recovery | cooldown | steady | rest`
+- `repeat_count` — integer ≥ 1 (for interval blocks, the number of reps)
+- `duration_min` and/or `distance_km` — at least one must be present
+  (exception: `rest` may omit both)
+- `hr_min_bpm` / `hr_max_bpm` — integers, min < max
+- `pace_fast_min_km` / `pace_slow_min_km` — decimal min/km, fast < slow
+- `execution_notes` — free-text instructions for the athlete (optional
+  but strongly recommended — e.g. "let HR drop below 141 before the
+  next rep")
+
+Block ordering follows array position. For interval workouts, typically:
+one `warmup`, N `work`/`recovery` pairs with `repeat_count` on each, one
+`cooldown`. Do NOT hide a fartlek as a single `steady` block — that
+defeats the point of the table.
+
+Example — fartlek with warmup, 6×(1min Z4 + 2min Z1), cooldown:
+
+```json
+{
+  "plan_date": "2026-04-17",
+  "sport_type": "Run",
+  "session_type": "fartlek",
+  "phase": "correction",
+  "duration_min": 40,
+  "distance_km": 6.5,
+  "hr_min_bpm": 130,
+  "hr_max_bpm": 184,
+  "pace_fast_min_km": 5.50,
+  "pace_slow_min_km": 7.33,
+  "description": "6x(1min Z4 + 2min Z1), warmup/cooldown 10min",
+  "blocks": [
+    {"block_type": "warmup", "repeat_count": 1,
+     "duration_min": 10,
+     "hr_min_bpm": 130, "hr_max_bpm": 145,
+     "pace_fast_min_km": 6.75, "pace_slow_min_km": 7.33,
+     "execution_notes": "Start ~7:15, progress to ~6:50 by the end"},
+    {"block_type": "work", "repeat_count": 6,
+     "duration_min": 1,
+     "hr_min_bpm": 169, "hr_max_bpm": 184,
+     "pace_fast_min_km": 5.50, "pace_slow_min_km": 5.97,
+     "execution_notes": "Push to upper Z4 (175+ bpm) by end of the minute, not a sprint"},
+    {"block_type": "recovery", "repeat_count": 6,
+     "duration_min": 2,
+     "hr_min_bpm": 126, "hr_max_bpm": 141,
+     "pace_fast_min_km": 7.00, "pace_slow_min_km": 7.50,
+     "execution_notes": "HR must drop below 150 before next rep; extend to 3min if needed"},
+    {"block_type": "cooldown", "repeat_count": 1,
+     "duration_min": 10,
+     "hr_min_bpm": 130, "hr_max_bpm": 145,
+     "pace_fast_min_km": 7.00, "pace_slow_min_km": 7.33,
+     "execution_notes": "Relax, finish without spiking HR"}
+  ]
+}
+```
+
+For a pure easy run, a single `steady` block is fine but usually
+unnecessary — the session-level range already describes it.
+
 ## When Claude agrees a plan with the user
 
 1. Generate the weekly proposal and present it as a table with columns
@@ -120,9 +188,20 @@ of the two axes.
 
 ## Present `list` output
 
-Render as a table: `Date | Sport | Type | Phase | Duration | Distance |
-HR range | Pace range | Status`. For past-dated rows already matched,
-append a second small table with deltas:
+For each session render a header line with
+`Date · Sport · Type · Phase · Duration · Distance · Status`.
+
+Immediately below, render a **block table** (only omit this for sessions
+with zero blocks persisted):
+
+`Block | × | Duration | Distance | HR range | Pace range | Notes`
+
+Every zone reference in the prose around the table MUST be accompanied
+by its numeric range (e.g. "Z4 (169–184 bpm, 5:30–5:58 min/km)"), so
+the athlete can execute from the watch without cross-referencing
+anything else.
+
+For past-dated rows already matched, append a small adherence table:
 `duration_delta_min`, `hr_avg_vs_range`, `pace_avg_vs_range`.
 
 ## Present `review` output
