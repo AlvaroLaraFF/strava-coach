@@ -13,17 +13,21 @@ PROJECT_ROOT = os.path.abspath(
 sys.path.insert(0, PROJECT_ROOT)
 
 from strava.analytics import parse_iso
-from strava.client import get_default_db_path, output_error, output_json
+from strava.client import StravaClient, get_default_db_path, output_error, output_json
 from strava.db import (
     delete_planned_range,
     delete_planned_session,
     get_activities_range,
+    get_blocks_for_sessions,
+    get_planned_blocks,
     link_planned_to_activity,
     list_planned_sessions,
     load_token,
+    replace_planned_blocks,
     update_planned_session,
     upsert_planned_session,
 )
+from strava.sync import sync_summary
 
 
 REQUIRED_FIELDS = (
@@ -37,10 +41,86 @@ REQUIRED_FIELDS = (
 )
 
 
+def _coerce_pace(value, field_name: str):
+    """Accept either decimal min/km (5.50) or 'M:SS' string — store as float."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and ":" in value:
+        try:
+            m, s = value.split(":")
+            return round(int(m) + int(s) / 60.0, 3)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"{field_name} has invalid M:SS format: {value!r}"
+            ) from e
+    try:
+        return float(value)
+    except (ValueError, TypeError) as e:
+        raise ValueError(
+            f"{field_name} must be a number or 'M:SS' string, got {value!r}"
+        ) from e
+
+VALID_BLOCK_TYPES = {"warmup", "work", "recovery", "cooldown", "steady", "rest"}
+
+REQUIRED_BLOCK_FIELDS = (
+    "block_type",
+    "hr_min_bpm",
+    "hr_max_bpm",
+    "pace_fast_min_km",
+    "pace_slow_min_km",
+)
+
+
+def validate_block(block: dict, idx: int) -> None:
+    missing = [k for k in REQUIRED_BLOCK_FIELDS if block.get(k) is None]
+    if missing:
+        raise ValueError(
+            f"block {idx} missing required fields: {', '.join(missing)}"
+        )
+    if block["block_type"] not in VALID_BLOCK_TYPES:
+        raise ValueError(
+            f"block {idx} has invalid block_type '{block['block_type']}'; "
+            f"allowed: {sorted(VALID_BLOCK_TYPES)}"
+        )
+    repeat = block.get("repeat_count", 1)
+    if not isinstance(repeat, int) or repeat < 1:
+        raise ValueError(
+            f"block {idx} repeat_count must be a positive integer"
+        )
+    if block["block_type"] == "rest":
+        return
+    if block["hr_min_bpm"] >= block["hr_max_bpm"]:
+        raise ValueError(
+            f"block {idx} hr_min_bpm ({block['hr_min_bpm']}) must be lower "
+            f"than hr_max_bpm ({block['hr_max_bpm']})"
+        )
+    if block["pace_fast_min_km"] >= block["pace_slow_min_km"]:
+        raise ValueError(
+            f"block {idx} pace_fast_min_km ({block['pace_fast_min_km']}) "
+            f"must be lower than pace_slow_min_km "
+            f"({block['pace_slow_min_km']}); lower number = faster"
+        )
+    if (
+        block.get("duration_min") is None
+        and block.get("distance_km") is None
+    ):
+        raise ValueError(
+            f"block {idx} must carry at least one of duration_min / distance_km"
+        )
+
+
 def validate_session(session: dict) -> None:
     missing = [k for k in REQUIRED_FIELDS if session.get(k) is None]
     if missing:
         raise ValueError(f"missing required fields: {', '.join(missing)}")
+    session["pace_fast_min_km"] = _coerce_pace(
+        session["pace_fast_min_km"], "pace_fast_min_km"
+    )
+    session["pace_slow_min_km"] = _coerce_pace(
+        session["pace_slow_min_km"], "pace_slow_min_km"
+    )
     if session["hr_min_bpm"] >= session["hr_max_bpm"]:
         raise ValueError(
             f"hr_min_bpm ({session['hr_min_bpm']}) must be lower than "
@@ -56,6 +136,15 @@ def validate_session(session: dict) -> None:
         datetime.strptime(session["plan_date"], "%Y-%m-%d")
     except ValueError as e:
         raise ValueError(f"plan_date must be YYYY-MM-DD: {e}") from None
+
+    blocks = session.get("blocks")
+    if blocks is not None:
+        if not isinstance(blocks, list) or not blocks:
+            raise ValueError("blocks must be a non-empty list when provided")
+        for i, block in enumerate(blocks):
+            if not isinstance(block, dict):
+                raise ValueError(f"block {i} is not an object")
+            validate_block(block, i)
 
 
 def session_from_add_args(args: argparse.Namespace) -> dict:
@@ -129,7 +218,9 @@ def auto_match(db_path: str, athlete_id: int, sessions: list[dict]) -> list[dict
         by_day.setdefault(key, []).append(a)
 
     for p in sessions:
-        if p.get("status") != "planned" or p.get("actual_strava_id") is not None:
+        if p.get("actual_strava_id") is not None:
+            continue
+        if p.get("status") not in ("planned", "skipped"):
             continue
         if not p.get("plan_date") or p["plan_date"] > today:
             continue
@@ -190,9 +281,22 @@ def strip_internal(rows: list[dict]) -> list[dict]:
 
 def cmd_add(db_path: str, athlete_id: int, args: argparse.Namespace) -> None:
     session = session_from_add_args(args)
+    if args.blocks:
+        try:
+            session["blocks"] = json.loads(args.blocks)
+        except json.JSONDecodeError as e:
+            output_error(f"--blocks is not valid JSON: {e}")
     validate_session(session)
     sid = upsert_planned_session(db_path, athlete_id, session)
-    output_json({"created": True, "session_id": sid})
+    if session.get("blocks"):
+        replace_planned_blocks(db_path, sid, session["blocks"])
+    output_json(
+        {
+            "created": True,
+            "session_id": sid,
+            "block_count": len(session.get("blocks") or []),
+        }
+    )
 
 
 def cmd_add_bulk(db_path: str, athlete_id: int, args: argparse.Namespace) -> None:
@@ -218,17 +322,38 @@ def cmd_add_bulk(db_path: str, athlete_id: int, args: argparse.Namespace) -> Non
         start, end = args.replace_range
         delete_planned_range(db_path, athlete_id, start, end)
 
-    ids = [upsert_planned_session(db_path, athlete_id, item) for item in payload]
+    ids = []
+    for item in payload:
+        sid = upsert_planned_session(db_path, athlete_id, item)
+        if item.get("blocks"):
+            replace_planned_blocks(db_path, sid, item["blocks"])
+        ids.append(sid)
     output_json({"created": len(ids), "ids": ids})
+
+
+def maybe_sync(db_path: str, sync: bool) -> None:
+    """Run a lightweight summary sync if --sync was passed."""
+    if not sync:
+        return
+    try:
+        client = StravaClient(db_path)
+        sync_summary(client, db_path, days=14)
+    except Exception:
+        pass  # non-fatal: proceed with whatever the DB already has
 
 
 def cmd_list(db_path: str, athlete_id: int, args: argparse.Namespace) -> None:
     start, end = args.start, args.end
     if not start or not end:
         start, end = current_iso_week_range()
+    maybe_sync(db_path, getattr(args, "sync", False))
     sessions = list_planned_sessions(db_path, athlete_id, start, end)
     auto_match(db_path, athlete_id, sessions)
+    blocks_by_sid = get_blocks_for_sessions(
+        db_path, [s["id"] for s in sessions]
+    )
     for p in sessions:
+        p["blocks"] = blocks_by_sid.get(p["id"], [])
         if p.get("status") == "completed" and p.get("_actual"):
             p.update(compute_session_deltas(p))
     output_json(
@@ -243,6 +368,7 @@ def cmd_list(db_path: str, athlete_id: int, args: argparse.Namespace) -> None:
 
 def cmd_review(db_path: str, athlete_id: int, args: argparse.Namespace) -> None:
     start, end = args.start, args.end
+    maybe_sync(db_path, getattr(args, "sync", False))
     sessions = list_planned_sessions(db_path, athlete_id, start, end)
     if not sessions:
         output_json(
@@ -408,6 +534,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--pace-slow", type=float, required=True)
     p_add.add_argument("--description", default=None)
     p_add.add_argument("--notes", default=None)
+    p_add.add_argument(
+        "--blocks",
+        default=None,
+        help="Optional JSON array of block dicts (warmup/work/recovery/cooldown)",
+    )
 
     p_bulk = sub.add_parser("add-bulk", help="Bulk insert sessions from stdin JSON array")
     p_bulk.add_argument(
@@ -421,10 +552,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", help="List sessions in a window (auto-matches past-dated rows)")
     p_list.add_argument("--start", default=None, help="YYYY-MM-DD (default: current ISO week Monday)")
     p_list.add_argument("--end", default=None, help="YYYY-MM-DD (default: current ISO week Sunday)")
+    p_list.add_argument("--sync", action="store_true", help="Sync from Strava before matching")
 
     p_review = sub.add_parser("review", help="Adherence report for a closed window")
     p_review.add_argument("--start", required=True, help="YYYY-MM-DD")
     p_review.add_argument("--end", required=True, help="YYYY-MM-DD")
+    p_review.add_argument("--sync", action="store_true", help="Sync from Strava before matching")
 
     p_upd = sub.add_parser("update", help="Update fields on a planned session")
     p_upd.add_argument("--id", type=int, required=True)

@@ -24,7 +24,7 @@ should activate automatically — slash commands are not required.
 
 ## Skill catalog
 
-28 skills total. Each skill has its own folder under `.claude/skills/<name>/`
+29 skills total. Each skill has its own folder under `.claude/skills/<name>/`
 with a `SKILL.md`, a `metadata.json`, and a `scripts/` subfolder containing
 the Python CLI(s) it invokes. All scripts output JSON via the standard
 `output_json()` / `output_error()` helpers in `strava/client.py`.
@@ -49,7 +49,8 @@ the Python CLI(s) it invokes. All scripts output JSON via the standard
 | **consistency** | Streaks, frequency, weekly volume variability. |
 | **polarization-check** | Am I following the 80/20 polarized model? |
 | **goals-tracker** | Set and track distance/time/elevation goals per period. |
-| **training-plan** | Persist confirmed weekly plans; track adherence vs actual activities. |
+| **training-plan** | Persist confirmed weekly plans; track adherence vs actual activities. Supports `--sync` on `list`/`review` to pull fresh data before matching. |
+| **session-analysis** | Deep per-km analysis of a single session: splits, HR drift, cadence, plan comparison. |
 | **gear-mileage** | Distance per shoe / bike with retirement alerts. |
 | **personal-heatmap** | Render a Leaflet heatmap of all training locations. |
 
@@ -117,6 +118,7 @@ user to know slash commands. Examples:
 | "my plan this week / what's on today / my training plan" | training-plan list |
 | "adherence / how am I doing vs plan / did I complete this week" | training-plan review |
 | (after user confirms a weekly plan proposal) | training-plan add-bulk |
+| "how did my session go / analyze today's run / per-km splits / qué tal mi sesión" | session-analysis |
 
 If multiple skills could plausibly answer, pick the **most specific** one and
 mention briefly that you can also run the others.
@@ -355,6 +357,45 @@ the coach's opinion is not. Examples:
 
 **Only save if the observation is NEW or CHANGED.** Don't rewrite the same
 memory if nothing shifted since the last run.
+
+---
+
+## Post-session-analysis protocol — propose plan revision
+
+After every `session-analysis` run (or any deep review of a single
+completed session), **check whether a weekly plan is active** for the
+current ISO week. If it is, propose to the user reviewing the remaining
+sessions in the week.
+
+"Active plan" means: `training-plan list` for the current ISO week
+returns at least one session whose `plan_date >= today` with
+`status == "planned"`. If none, skip — there is nothing to revise.
+
+**How to apply:**
+
+1. Finish presenting the session analysis and its memory write.
+2. Call `training-plan list` for the current ISO week silently.
+3. If there are remaining planned sessions, close the turn with a short
+   proposal: "Dada la ejecución de hoy, ¿revisamos lo que queda de
+   semana? Tienes X en Y día(s) aún pendiente." (Spanish, brief.)
+4. If the user accepts, build a concrete diff (what stays, what moves,
+   what changes HR/pace/duration) with the same "specificity" rule that
+   applies to session descriptions: every zone reference comes with
+   numeric range.
+5. Persist changes with `training-plan update` (single field changes)
+   or `add-bulk --replace-range` (wholesale rewrite of the week).
+
+**When to SKIP the proposal:**
+
+- No active plan for the current ISO week, OR
+- All remaining sessions are ≥ 3 days away AND the executed session was
+  fully within plan (no surprises to account for), OR
+- The user already declined a plan revision earlier in the same
+  conversation.
+
+The proposal should be one or two sentences, not a decided plan —
+present it as something the user can redirect. Do not persist any
+change without explicit confirmation.
 
 ---
 

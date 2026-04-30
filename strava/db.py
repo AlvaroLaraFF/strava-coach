@@ -151,6 +151,25 @@ def init_db(db_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_planned_sessions_strava_id
                 ON planned_sessions(actual_strava_id);
 
+            CREATE TABLE IF NOT EXISTS planned_session_blocks (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id          INTEGER NOT NULL,
+                order_idx           INTEGER NOT NULL,
+                block_type          TEXT    NOT NULL,
+                repeat_count        INTEGER NOT NULL DEFAULT 1,
+                duration_min        REAL,
+                distance_km         REAL,
+                hr_min_bpm          INTEGER,
+                hr_max_bpm          INTEGER,
+                pace_fast_min_km    REAL,
+                pace_slow_min_km    REAL,
+                execution_notes     TEXT,
+                created_at          TEXT DEFAULT (datetime('now')),
+                updated_at          TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_planned_session_blocks_session
+                ON planned_session_blocks(session_id, order_idx);
+
             CREATE TABLE IF NOT EXISTS athlete_snapshots (
                 id                      INTEGER PRIMARY KEY AUTOINCREMENT,
                 athlete_id              INTEGER NOT NULL,
@@ -838,6 +857,10 @@ def delete_planned_session(db_path: str, session_id: int) -> None:
     conn = _connect(db_path)
     try:
         conn.execute(
+            "DELETE FROM planned_session_blocks WHERE session_id = ?",
+            (session_id,),
+        )
+        conn.execute(
             "DELETE FROM planned_sessions WHERE id = ?", (session_id,)
         )
         conn.commit()
@@ -851,6 +874,15 @@ def delete_planned_range(
     """Delete all planned sessions for athlete in [start, end]. Returns count."""
     conn = _connect(db_path)
     try:
+        conn.execute(
+            """DELETE FROM planned_session_blocks
+               WHERE session_id IN (
+                   SELECT id FROM planned_sessions
+                   WHERE athlete_id = ?
+                     AND plan_date BETWEEN ? AND ?
+               )""",
+            (athlete_id, start, end),
+        )
         cur = conn.execute(
             """DELETE FROM planned_sessions
                WHERE athlete_id = ?
@@ -859,6 +891,96 @@ def delete_planned_range(
         )
         conn.commit()
         return cur.rowcount
+    finally:
+        conn.close()
+
+
+_BLOCK_COLUMNS = [
+    "order_idx", "block_type", "repeat_count",
+    "duration_min", "distance_km",
+    "hr_min_bpm", "hr_max_bpm",
+    "pace_fast_min_km", "pace_slow_min_km",
+    "execution_notes",
+]
+
+
+def replace_planned_blocks(
+    db_path: str, session_id: int, blocks: list[dict]
+) -> int:
+    """Replace all blocks for a session atomically. Returns count inserted."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "DELETE FROM planned_session_blocks WHERE session_id = ?",
+            (session_id,),
+        )
+        for idx, block in enumerate(blocks):
+            conn.execute(
+                """INSERT INTO planned_session_blocks
+                   (session_id, order_idx, block_type, repeat_count,
+                    duration_min, distance_km,
+                    hr_min_bpm, hr_max_bpm,
+                    pace_fast_min_km, pace_slow_min_km,
+                    execution_notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    block.get("order_idx", idx),
+                    block["block_type"],
+                    block.get("repeat_count", 1),
+                    block.get("duration_min"),
+                    block.get("distance_km"),
+                    block.get("hr_min_bpm"),
+                    block.get("hr_max_bpm"),
+                    block.get("pace_fast_min_km"),
+                    block.get("pace_slow_min_km"),
+                    block.get("execution_notes"),
+                ),
+            )
+        conn.commit()
+        return len(blocks)
+    finally:
+        conn.close()
+
+
+def get_planned_blocks(db_path: str, session_id: int) -> list[dict]:
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT * FROM planned_session_blocks
+               WHERE session_id = ?
+               ORDER BY order_idx ASC, id ASC""",
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def get_blocks_for_sessions(
+    db_path: str, session_ids: list[int]
+) -> dict[int, list[dict]]:
+    """Batch-load blocks for many sessions. Returns {session_id: [blocks]}."""
+    if not session_ids:
+        return {}
+    conn = _connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(session_ids))
+        rows = conn.execute(
+            f"""SELECT * FROM planned_session_blocks
+                WHERE session_id IN ({placeholders})
+                ORDER BY session_id ASC, order_idx ASC, id ASC""",
+            session_ids,
+        ).fetchall()
+        result: dict[int, list[dict]] = {sid: [] for sid in session_ids}
+        for r in rows:
+            d = dict(r)
+            result.setdefault(d["session_id"], []).append(d)
+        return result
+    except sqlite3.OperationalError:
+        return {sid: [] for sid in session_ids}
     finally:
         conn.close()
 
