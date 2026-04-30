@@ -8,7 +8,7 @@ import sys
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-from strava.analytics import fmt_pace, pace_min_per_km, vdot_from_5k, vdot_to_threshold_pace
+from strava.analytics import fmt_pace, hr_zones_karvonen, pace_min_per_km, vdot_from_5k, vdot_to_threshold_pace
 from strava.client import get_default_db_path, output_error, output_json
 from strava.db import get_activities_range, get_best_efforts_pr, load_token
 from strava.snapshot import ensure_snapshot
@@ -68,12 +68,14 @@ def main() -> None:
                    help="threshold pace as M:SS per km")
     p.add_argument("--hr-max", type=float, default=None,
                    help="max heart rate (used for HR-based threshold fallback)")
+    p.add_argument("--hr-rest", type=float, default=None,
+                   help="resting heart rate (used for Karvonen HR zones)")
     args = p.parse_args()
 
     try:
         db = get_default_db_path()
 
-        snap = ensure_snapshot(db, required_fields=["hr_max_bpm", "threshold_pace_min_km"])
+        snap = ensure_snapshot(db, required_fields=["hr_max_bpm", "hr_rest_bpm", "threshold_pace_min_km"])
         hr_max = args.hr_max or snap.get("hr_max_bpm") or 190.0
 
         activities = [a for a in get_activities_range(db, days=args.days)
@@ -130,18 +132,64 @@ def main() -> None:
         easy_pct = round(easy_count / total * 100, 1) if total else 0
 
         if easy_pct >= 75:
-            verdict = "GOOD: enough easy running"
+            pace_verdict = "GOOD: enough easy running"
         elif easy_pct >= 60:
-            verdict = "OK but could be more easy"
+            pace_verdict = "OK but could be more easy"
         else:
-            verdict = "TOO MUCH HARD RUNNING — slow down easy days"
+            pace_verdict = "TOO MUCH HARD RUNNING — slow down easy days"
+
+        # --- HR-based distribution (Karvonen) for dual comparison ---
+        hr_max = args.hr_max or snap.get("hr_max_bpm")
+        hr_rest = args.hr_rest or snap.get("hr_rest_bpm")
+        hr_distribution = None
+        hr_zones_info = None
+        hr_easy_pct = None
+        hr_verdict = None
+
+        if hr_max and hr_rest and hr_max > hr_rest:
+            hr_zones_list = hr_zones_karvonen(hr_max, hr_rest)
+            hr_zones_info = {f"Z{z['zone']}_{z['name'].lower()}": z for z in hr_zones_list}
+            hr_distribution = {f"Z{z['zone']}_{z['name'].lower()}": 0 for z in hr_zones_list}
+
+            for a in activities:
+                avg_hr = a.get("average_hr")
+                if not avg_hr:
+                    continue
+                hrr = hr_max - hr_rest
+                pct = (avg_hr - hr_rest) / hrr
+                if pct < 0.60:
+                    hr_distribution["Z1_recovery"] += 1
+                elif pct < 0.70:
+                    hr_distribution["Z2_aerobic"] += 1
+                elif pct < 0.80:
+                    hr_distribution["Z3_tempo"] += 1
+                elif pct < 0.90:
+                    hr_distribution["Z4_threshold"] += 1
+                else:
+                    hr_distribution["Z5_vo2max"] += 1
+
+            hr_total = sum(hr_distribution.values())
+            hr_easy_count = hr_distribution["Z1_recovery"] + hr_distribution["Z2_aerobic"]
+            hr_easy_pct = round(hr_easy_count / hr_total * 100, 1) if hr_total else 0
+
+            if hr_easy_pct >= 75:
+                hr_verdict = "GOOD: enough easy running"
+            elif hr_easy_pct >= 60:
+                hr_verdict = "OK but could be more easy"
+            else:
+                hr_verdict = "TOO MUCH HARD RUNNING — slow down easy days"
 
         output_json({
             "threshold_pace": fmt_pace(threshold),
             "zones": zones,
             "recent_distribution": distribution,
             "easy_pct": easy_pct,
-            "verdict": verdict,
+            "verdict": pace_verdict,
+            "hr_distribution": hr_distribution,
+            "hr_zones": {k: {"min_bpm": v["min_bpm"], "max_bpm": v["max_bpm"]}
+                         for k, v in hr_zones_info.items()} if hr_zones_info else None,
+            "hr_easy_pct": hr_easy_pct,
+            "hr_verdict": hr_verdict,
             "runs_analyzed": len(activities),
         })
     except Exception as e:
