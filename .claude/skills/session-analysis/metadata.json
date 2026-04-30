@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "organization": "personal",
+  "date": "2026-04-15",
+  "abstract": "Per-km split analysis, HR drift, cadence, and planned-vs-actual comparison for a single session.",
+  "tags": ["strava", "running", "analysis", "splits", "session"]
+}
