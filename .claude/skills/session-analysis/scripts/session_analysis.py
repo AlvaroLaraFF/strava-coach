@@ -15,9 +15,9 @@ PROJECT_ROOT = os.path.abspath(
 )
 sys.path.insert(0, PROJECT_ROOT)
 
-from strava.client import StravaClient, get_default_db_path, output_error, output_json
+from strava.client import get_default_db_path, output_error, output_json
 from strava.db import get_planned_blocks, load_laps, load_token
-from strava.sync import sync_summary
+from strava.fileimport import import_from_downloads
 
 
 INTERVAL_SESSION_TYPES = {"fartlek", "interval", "tempo"}
@@ -1249,6 +1249,82 @@ def _minetti_factor(grade: float) -> float:
     return cost / 3.6
 
 
+def compute_per_km_terrain(streams: dict | None) -> dict[int, dict] | None:
+    """Per-km terrain breakdown from streams.
+
+    Returns {km_idx: {grade_pct_net, grade_pct_max_50m, asc_m, desc_m,
+    gap_pace_min_km}} where km_idx starts at 1.
+
+    `grade_pct_net` is net altitude change over km distance — what the
+    average terrain felt like. `grade_pct_max_50m` is the steepest 50 m
+    rolling window inside the km — what the hardest stretch was. Both
+    matter: a km can have a benign net grade and still hide a wall.
+
+    `gap_pace_min_km` uses Minetti to flat-equivalent the kilometre, so
+    decisions about pace verdict per km should compare against this, not
+    raw pace.
+    """
+    if not streams:
+        return None
+    dist = _series(streams, "distance")
+    alt = _series(streams, "altitude")
+    time = _series(streams, "time")
+    if not dist or not alt or not time or len(dist) != len(alt):
+        return None
+
+    by_km: dict[int, list[tuple[float, float, float]]] = {}
+    for i in range(len(dist)):
+        if dist[i] is None or alt[i] is None or time[i] is None:
+            continue
+        km_idx = int(dist[i] // 1000) + 1
+        by_km.setdefault(km_idx, []).append((dist[i], alt[i], time[i]))
+
+    out: dict[int, dict] = {}
+    for km, pts in by_km.items():
+        if len(pts) < 2:
+            continue
+        d0 = pts[0][0]
+        d1 = pts[-1][0]
+        dd = d1 - d0
+        if dd <= 0:
+            continue
+        net_grade = (pts[-1][1] - pts[0][1]) / dd * 100.0
+        asc = sum(max(0.0, pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+        desc = sum(max(0.0, pts[i][1] - pts[i + 1][1]) for i in range(len(pts) - 1))
+        # Steepest 50 m rolling grade (signed — return the largest abs)
+        max_grade = 0.0
+        for i in range(len(pts) - 1):
+            for j in range(i + 1, len(pts)):
+                wd = pts[j][0] - pts[i][0]
+                if wd >= 50:
+                    g = (pts[j][1] - pts[i][1]) / wd * 100.0
+                    if abs(g) > abs(max_grade):
+                        max_grade = g
+                    break
+        # Flat-equivalent metres → GAP for the km
+        flat_eq = 0.0
+        elapsed_s = 0.0
+        for i in range(1, len(pts)):
+            seg_d = pts[i][0] - pts[i - 1][0]
+            seg_t = pts[i][2] - pts[i - 1][2]
+            if seg_d <= 0 or seg_t <= 0:
+                continue
+            seg_g = (pts[i][1] - pts[i - 1][1]) / seg_d
+            flat_eq += seg_d * _minetti_factor(seg_g)
+            elapsed_s += seg_t
+        gap_pace = None
+        if flat_eq > 0 and elapsed_s > 0:
+            gap_pace = (elapsed_s / 60.0) / (flat_eq / 1000.0)
+        out[km] = {
+            "grade_pct_net": round(net_grade, 1),
+            "grade_pct_max_50m": round(max_grade, 1),
+            "asc_m": round(asc, 1),
+            "desc_m": round(desc, 1),
+            "gap_pace_min_km": round(gap_pace, 3) if gap_pace else None,
+        }
+    return out
+
+
 def elevation_analysis(streams: dict | None, total_elevation_m: float | None) -> dict | None:
     """Compute elevation profile, grade buckets and Grade-Adjusted Pace from streams."""
     if not streams:
@@ -1355,8 +1431,19 @@ def elevation_analysis(streams: dict | None, total_elevation_m: float | None) ->
 def slowdown_analysis(per_km: list[dict], threshold_sec: float = 12.0) -> dict | None:
     """Identify splits that ran significantly slower than the median, and explain why.
 
+    When per-km terrain data is available (grade_pct_net, grade_pct_max_50m,
+    gap_pace_min_km), the analysis switches to grade-adjusted pace as the
+    primary signal:
+    - The slowdown threshold is applied to GAP, not raw pace, so an uphill
+      km whose flat-equivalent pace is in line with the median is NOT
+      flagged as a slowdown.
+    - When raw pace IS slower but GAP is in line, the split is reported
+      with reason `terrain_explained` (the hill, not the legs).
+
     Reasons considered, in priority order:
-    - uphill: split elevation_m gain > 5m
+    - uphill: grade_pct_net > 1.5% or grade_pct_max_50m > 4%
+      (or, fallback when no grade data, elevation_m > 5)
+    - terrain_explained: raw pace slow but GAP within threshold
     - cardiac_drift: HR more than 5 bpm above the run's median HR
     - cadence_drop: cadence more than 4 spm below the run's median cadence
     - intrinsic: nothing external explains the drop
@@ -1365,8 +1452,14 @@ def slowdown_analysis(per_km: list[dict], threshold_sec: float = 12.0) -> dict |
     if len(paces) < 3:
         return None
 
+    has_gap = any(k.get("gap_pace_min_km") is not None for k in per_km)
     sorted_paces = sorted(paces)
     median_pace = sorted_paces[len(sorted_paces) // 2]
+    median_gap = None
+    if has_gap:
+        gaps = [k["gap_pace_min_km"] for k in per_km if k.get("gap_pace_min_km") is not None]
+        if gaps:
+            median_gap = sorted(gaps)[len(gaps) // 2]
     threshold_min = threshold_sec / 60.0
 
     hrs = [k.get("avg_hr") for k in per_km if k.get("avg_hr")]
@@ -1380,17 +1473,47 @@ def slowdown_analysis(per_km: list[dict], threshold_sec: float = 12.0) -> dict |
         pace = k.get("pace_min_km")
         if pace is None:
             continue
-        delta = pace - median_pace
-        if delta < threshold_min:
+        gap = k.get("gap_pace_min_km")
+        # Decide primary slowness signal: GAP if available, raw pace otherwise.
+        if median_gap is not None and gap is not None:
+            primary_delta = gap - median_gap
+        else:
+            primary_delta = pace - median_pace
+        raw_delta = pace - median_pace
+        if primary_delta < threshold_min and raw_delta < threshold_min:
             continue
 
         reasons = []
         elev = k.get("elevation_m") or 0
+        grade_net = k.get("grade_pct_net")
+        grade_max = k.get("grade_pct_max_50m")
         hr = k.get("avg_hr")
         cad = k.get("cadence_spm")
 
-        if elev > 5:
+        # Uphill detection — prefer grade when available
+        if grade_net is not None or grade_max is not None:
+            if (grade_net is not None and grade_net > 1.5) or (grade_max is not None and grade_max > 4):
+                detail_parts = []
+                if grade_net is not None:
+                    detail_parts.append(f"net {grade_net:+.1f}%")
+                if grade_max is not None:
+                    detail_parts.append(f"max-50m {grade_max:+.1f}%")
+                reasons.append({"type": "uphill", "detail": " · ".join(detail_parts)})
+        elif elev > 5:
             reasons.append({"type": "uphill", "detail": f"+{round(elev,1)}m elevation"})
+
+        # Terrain-explained: raw pace looks slow, GAP doesn't
+        if (
+            median_gap is not None
+            and gap is not None
+            and raw_delta >= threshold_min
+            and (gap - median_gap) < threshold_min
+        ):
+            reasons.append({
+                "type": "terrain_explained",
+                "detail": f"GAP {round((gap-median_gap)*60,1):+} s vs median — hill, not legs",
+            })
+
         if median_hr is not None and hr is not None and hr - median_hr > 5:
             reasons.append({"type": "cardiac_drift", "detail": f"HR +{round(hr-median_hr,1)} vs median"})
         if median_cad is not None and cad is not None and median_cad - cad > 4:
@@ -1398,23 +1521,35 @@ def slowdown_analysis(per_km: list[dict], threshold_sec: float = 12.0) -> dict |
         if not reasons:
             reasons.append({"type": "intrinsic", "detail": "no external factor — likely effort/willpower"})
 
-        worst.append({
+        entry = {
             "km": k.get("km"),
             "pace": k.get("pace"),
             "pace_min_km": pace,
-            "delta_sec_vs_median": round(delta * 60.0, 1),
+            "delta_sec_vs_median": round(raw_delta * 60.0, 1),
             "avg_hr": hr,
             "elevation_m": elev,
             "cadence_spm": cad,
             "reasons": reasons,
-        })
+        }
+        if gap is not None:
+            entry["gap_pace_min_km"] = gap
+            entry["gap_delta_sec_vs_median"] = (
+                round((gap - median_gap) * 60.0, 1) if median_gap is not None else None
+            )
+        if grade_net is not None:
+            entry["grade_pct_net"] = grade_net
+        if grade_max is not None:
+            entry["grade_pct_max_50m"] = grade_max
+        worst.append(entry)
 
     worst.sort(key=lambda x: -x["delta_sec_vs_median"])
     return {
         "median_pace_min_km": round(median_pace, 3),
+        "median_gap_pace_min_km": round(median_gap, 3) if median_gap is not None else None,
         "median_hr": round(median_hr, 1) if median_hr else None,
         "median_cadence_spm": round(median_cad, 1) if median_cad else None,
         "threshold_sec_vs_median": threshold_sec,
+        "primary_signal": "gap" if median_gap is not None else "raw_pace",
         "slow_splits": worst,
         "n_slow": len(worst),
     }
@@ -1701,15 +1836,20 @@ def main() -> None:
     athlete_id = token["athlete_id"]
 
     if args.sync:
+        # Data-in is now file-based (Strava's API is gone): import whatever the
+        # user has already exported into Downloads. If nothing is there, the
+        # assistant opens the browser and waits (see strava-sync SKILL.md), then
+        # re-runs this with --sync.
         try:
-            client = StravaClient(db_path)
-            sync_summary(client, db_path, days=14)
+            import_from_downloads(db_path, delete=True)
         except Exception:
             pass
 
     activity = find_activity(db_path, args.strava_id, args.date)
     if not activity:
-        output_error(f"No activity found for {'strava_id=' + str(args.strava_id) if args.strava_id else 'date=' + str(args.date)}")
+        output_error(f"No activity found for {'strava_id=' + str(args.strava_id) if args.strava_id else 'date=' + str(args.date)}. "
+                     "Import the activity file first (strava-sync): export it from the "
+                     "watch/Strava into Downloads, then re-run with --sync.")
 
     # Parse raw_json for splits and laps
     raw = {}
@@ -1720,7 +1860,8 @@ def main() -> None:
 
     splits = raw.get("splits_metric")
     if not splits:
-        output_error("splits_metric not available. Sync details first: strava-sync --level details --limit 5")
+        output_error("splits_metric not available for this activity. Re-import its "
+                     "file via strava-sync (export TCX/GPX into Downloads, then import).")
 
     laps = raw.get("laps")
 
@@ -1814,7 +1955,7 @@ def main() -> None:
             else:
                 interval_breakdown = {
                     "source": "streams",
-                    "error": "streams not cached — run strava-sync --level streams first",
+                    "error": "streams not cached — re-import this activity's TCX/GPX via strava-sync (Downloads import)",
                     "expected_reps": sum(
                         int(wb.get("repeat_count") or 1) for wb in work_blocks
                     ),
@@ -1868,7 +2009,26 @@ def main() -> None:
     # Elevation analysis (uses streams)
     elevation = elevation_analysis(streams, activity.get("total_elevation"))
 
-    # Slowdown analysis (uses per-km splits + cadence)
+    # Per-km terrain (grade + GAP) — enrich each split so downstream
+    # slowdown / pace verdicts can reason on grade-adjusted pace, not
+    # raw pace. Without this, an uphill km looks like a fade.
+    per_km_terrain = compute_per_km_terrain(streams)
+    if per_km_terrain:
+        for split in analysis["per_km"]:
+            t = per_km_terrain.get(split.get("km"))
+            if t:
+                split["grade_pct_net"] = t["grade_pct_net"]
+                split["grade_pct_max_50m"] = t["grade_pct_max_50m"]
+                split["gap_pace_min_km"] = t["gap_pace_min_km"]
+                if t["gap_pace_min_km"] is not None:
+                    mins = int(t["gap_pace_min_km"])
+                    secs = int(round((t["gap_pace_min_km"] - mins) * 60))
+                    if secs == 60:
+                        mins += 1
+                        secs = 0
+                    split["gap_pace"] = f"{mins}:{secs:02d}"
+
+    # Slowdown analysis (uses per-km splits + cadence + grade)
     slowdown = slowdown_analysis(analysis["per_km"])
 
     # Pace shape

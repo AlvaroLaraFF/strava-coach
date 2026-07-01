@@ -87,6 +87,44 @@ python3 .claude/skills/training-plan/scripts/training_plan.py update --id 12 --d
 python3 .claude/skills/training-plan/scripts/training_plan.py delete --id 12
 ```
 
+Reset a session to `planned` and unlink any matched activity (use this
+when the auto-matcher made a wrong call — e.g. it marked a same-day
+session as skipped before the user finished the day, or it linked the
+wrong activity). Atomic and idempotent — never write SQL UPDATEs by
+hand for this:
+
+```bash
+python3 .claude/skills/training-plan/scripts/training_plan.py reset --id 22
+```
+
+## Schema reference (read this BEFORE writing any SQL ad-hoc)
+
+If you need data this skill doesn't expose, read this section first.
+Never guess column names — the columns below are the authoritative list.
+
+`planned_sessions` columns:
+`id, athlete_id, plan_date, sport_type, session_type, phase,
+duration_min, distance_km, hr_min_bpm, hr_max_bpm, pace_fast_min_km,
+pace_slow_min_km, description, notes, status, actual_strava_id,
+created_at, updated_at`
+
+`planned_session_blocks` columns:
+`id, session_id, order_idx, block_type, repeat_count, duration_min,
+distance_km, hr_min_bpm, hr_max_bpm, pace_fast_min_km, pace_slow_min_km,
+execution_notes, created_at, updated_at`
+
+`activities` columns (for cross-referencing against matched activities):
+`id, strava_id, athlete_id, name, sport_type, start_date, distance,
+moving_time, elapsed_time, total_elevation, average_speed, max_speed,
+average_hr, max_hr, average_watts, kilojoules, kudos_count, raw_json,
+synced_at`
+
+Notes:
+- The activities timestamp column is `start_date`, NOT `start_date_local`.
+- `distance` is in **metres** and `moving_time` in **seconds**.
+- To open the DB programmatically use `sqlite3.connect(get_default_db_path())`
+  from `strava.client` — there is no `get_db_connection` helper in `strava.db`.
+
 ## Required fields per session (hard-enforced)
 
 Every session passed to `add` or `add-bulk` must carry:

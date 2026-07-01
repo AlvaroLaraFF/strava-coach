@@ -16,13 +16,13 @@ Output is a JSON with:
 
 - `narrative`: 4–8 ready-made English bullets summarising the run; the assistant translates them to the user's conversation language at presentation time
 - `summary`: distance, duration, avg pace, avg/max HR, calories, device
-- `splits`: per-km table with pace, HR, elevation delta, cadence, HR + pace zone
+- `splits`: per-km table with pace, HR, elevation delta, cadence, HR + pace zone. When streams are cached, each split also carries `grade_pct_net` (avg grade over the km), `grade_pct_max_50m` (steepest 50 m rolling window inside the km — surfaces ramps that the net hides) and `gap_pace_min_km` / `gap_pace` (Minetti grade-adjusted pace for the km).
 - `pace_shape`: classifies the run as `progressive`, `fade`, `u_shape`, `surge`, `even`
 - `hr_drift`: first-half vs second-half HR + pace
 - `pace_stats`: avg, std-dev, fastest/slowest km, negative split flag
 - `zone_distribution`: km count per HR-zone (Karvonen) or pace-zone fallback
 - `elevation`: total gain/loss, time-in-bucket (uphill/flat/downhill), GAP, steepest grade
-- `slowdown`: which kms ran significantly slower than the median and the most likely cause for each (uphill, cardiac drift, cadence drop, intrinsic)
+- `slowdown`: which kms ran significantly slower than the median and the most likely cause for each. When per-km terrain data is present, the **primary signal switches from raw pace to GAP** (`primary_signal: "gap"`). Causes: `uphill` (grade-driven, prefers grade_pct_net > 1.5% or grade_pct_max_50m > 4%), `terrain_explained` (raw pace looks slow but GAP is in line — the hill, not the legs), `cardiac_drift`, `cadence_drop`, `intrinsic`.
 - `similar_sessions`: median pace/HR of the last 10 same-sport runs at ±20% distance, plus the delta of this session vs that baseline + rank in the band
 - `most_similar`: full per-km analysis (summary + splits + drift + shape) of the single most-comparable past run (±15% distance, weighted score on distance/elevation/recency, with same-session_type bonus when a planned context exists)
 - `side_by_side`: km-by-km comparison rows between this session and `most_similar` — pace, HR, elevation, cadence, plus a `headline` with delta distance/duration/pace/HR/elevation
@@ -175,15 +175,24 @@ got faster or your HR settled. Anchor progression on
    interval training.
 4. **Per-km splits table** (PRIMARY for easy / long / steady runs,
    secondary for intervals): km, pace, avg HR, max HR, elev Δ, cadence,
-   HR-zone.
+   HR-zone. **When `grade_pct_net` and `gap_pace` are present in the
+   splits, ALWAYS include them** — render two extra columns for grade
+   (net% / max-50m%) and GAP. Without these the reader can't separate
+   terrain from effort.
 5. **Pace shape + HR drift**: one short paragraph combining `pace_shape`
-   and `hr_drift`. Flag drift > 5%. For interval sessions, note that
-   per-km drift mixes work and recoveries and is therefore not
-   informative — anchor drift assessment on the rep HR trend instead.
+   and `hr_drift`. Flag drift > 5%. **When per-km GAP is available**,
+   recompute the shape mentally on GAP: a "fade" in raw pace whose GAPs
+   are flat is *terrain*, not fatigue — say so explicitly. For interval
+   sessions, note that per-km drift mixes work and recoveries and is
+   therefore not informative — anchor drift assessment on the rep HR
+   trend instead.
 6. **Slowdown breakdown**: render the worst 2–3 splits from
    `slowdown.slow_splits` as `Km X (Δ +Y s/km vs median) → cause: …`.
-   If `slowdown.n_slow == 0`, skip this section silently — there's
-   nothing to explain.
+   When `slowdown.primary_signal == "gap"`, lead with the GAP delta
+   (not raw pace) and surface any `terrain_explained` reason
+   prominently — that's the model saying "this looked slow but it
+   wasn't". If `slowdown.n_slow == 0`, skip this section silently —
+   there's nothing to explain.
 7. **Elevation profile** (only if `elevation.buckets` is present):
    total gain/loss, distribution uphill / flat / downhill, GAP vs actual
    pace, steepest grade and where it was. Skip if the activity is flat
@@ -237,6 +246,32 @@ Apply these rules (consistent with `feedback_hr_zones_primary` and
   drifting up uncontrollably) within reps are signs the athlete is
   controlling the session. Cadence descending and HR climbing rep over
   rep are signs of fatigue / under-recovery.
+
+## Reading per-km terrain (REQUIRED logic)
+
+When the splits carry `grade_pct_net`, `grade_pct_max_50m` and
+`gap_pace`, treat them as the primary lens for any pace verdict —
+raw pace is misleading on rolling terrain.
+
+- **A "fade" in raw pace can be entirely terrain.** Always recompute
+  the pattern on GAP. If GAPs are flat across the run while raw paces
+  rise, the legs held up — geography slowed the watch, not the body.
+  Say so explicitly. Do not write "fade" or "the user faded" without
+  having checked GAP first.
+- **Net grade hides ramps.** A km with `grade_pct_net = +0.4 %` can
+  still hide a 50 m wall at +6 %. `grade_pct_max_50m` is the right
+  signal for "did the athlete actually meet a hard climb in this km".
+- **HR is interpreted on raw pace, not on GAP.** The cardiac cost is
+  what the body actually paid; the hill *did* push HR up. So GAP
+  explains pace; HR drift still reads on the real signal.
+- **Coaching decisions for next sessions reason on GAP.** When deciding
+  "should the athlete cap pace next time", anchor on the GAP
+  distribution, not the raw splits. Telling someone to slow down on a
+  km whose GAP was already in line is a coaching error.
+- **If terrain data is unavailable** (`elevation.source == "summary_only"`,
+  no `gap_pace` in splits), call out that streams aren't cached and
+  invoke `strava-sync --level streams --limit 5` — never paper over
+  with raw-pace verdicts when the user has rolling terrain.
 
 ## Reading the slowdown output
 

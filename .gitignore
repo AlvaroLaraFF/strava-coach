@@ -1,5 +1,7 @@
 .env
 *.db
+*.db-shm
+*.db-wal
 __pycache__/
 *.pyc
 .venv/
@@ -7,3 +9,8 @@ venv/
 .idea/
 
 .session_state.json
+
+# webapp (React frontend)
+node_modules/
+webapp/frontend/dist/
+webapp/frontend/.vite/

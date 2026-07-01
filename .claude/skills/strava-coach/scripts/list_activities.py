@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")))
 from strava.client import StravaClient, StravaAuthError, StravaAPIError, get_default_db_path, output_json, output_error
 from strava.db import init_db, upsert_activities, get_recent_activities
+from strava.fileimport import import_from_downloads
 
 
 def _format_activity(act: dict) -> dict:
@@ -60,20 +61,13 @@ def main():
         db_path = get_default_db_path()
         init_db(db_path)
 
-        if args.sync or args.dry_run:
-            client = StravaClient(db_path)
-            params = {"per_page": min(args.limit * 2, 100)}
-            if args.days:
-                after = int((datetime.now(timezone.utc) - timedelta(days=args.days)).timestamp())
-                params["after"] = after
-            raw = client.get_activities(**params)
-            if args.sync and not args.dry_run:
-                upsert_activities(db_path, raw)
-
-            if args.dry_run:
-                formatted = [_format_activity(a) for a in raw]
-                output_json({"activities": formatted, "count": len(formatted), "dry_run": True})
-                return
+        # Data-in is now file-based (Strava's API is gone). --sync imports any
+        # newly-exported activity files from Downloads; --dry-run previews them.
+        if args.dry_run:
+            output_json(import_from_downloads(db_path, dry_run=True))
+            return
+        if args.sync:
+            import_from_downloads(db_path, delete=True)
 
         activities = get_recent_activities(db_path, limit=args.limit, sport_type=args.sport_type)
         formatted = [_format_activity(a) for a in activities]

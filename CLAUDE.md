@@ -34,7 +34,7 @@ the Python CLI(s) it invokes. All scripts output JSON via the standard
 | Skill | Purpose |
 |---|---|
 | **strava-setup** | First-time setup wizard: Python check, dependencies, OAuth flow with Strava. Run once. |
-| **strava-sync** | Pull data into the local DB. Three levels: `summary` (fast list), `details` (per-activity full payload — best_efforts, splits, weighted_average_watts), `streams` (per-second time series), plus `zones` (athlete HR/power zones). |
+| **strava-sync** | Bring new activities into the local DB **from files the athlete exports by hand** (TCX/GPX in Downloads → import → delete). The Strava API is gone (subscriber-only since ~2026-07-01); there is no summary/details/streams API pull anymore — a single file import already carries splits, streams and laps. See "Data ingestion protocol" below. |
 | **athlete-snapshot** | Compute and store a time-series physiological profile (FTP, VDOT, threshold pace, HR zones, CTL/ATL/TSB, ACWR, etc.). Tracks evolution and alerts on significant changes. |
 | **memory-consolidate** | Audit and refresh the project memory bank against live data. **Auto-invoked at session start** and on user request. |
 
@@ -49,7 +49,7 @@ the Python CLI(s) it invokes. All scripts output JSON via the standard
 | **consistency** | Streaks, frequency, weekly volume variability. |
 | **polarization-check** | Am I following the 80/20 polarized model? |
 | **goals-tracker** | Set and track distance/time/elevation goals per period. |
-| **training-plan** | Persist confirmed weekly plans; track adherence vs actual activities. Supports `--sync` on `list`/`review` to pull fresh data before matching. |
+| **training-plan** | Persist confirmed weekly plans; track adherence vs actual activities. `--sync` on `list`/`review` now imports newly-exported files from Downloads before matching (no API). |
 | **session-analysis** | Deep per-km analysis of a single session: splits, HR drift, cadence, plan comparison. |
 | **gear-mileage** | Distance per shoe / bike with retirement alerts. |
 | **personal-heatmap** | Render a Leaflet heatmap of all training locations. |
@@ -112,7 +112,7 @@ user to know slash commands. Examples:
 | "my power curve / best 20 min" | ride-power-curve |
 | "what's my FTP" | ride-ftp-estimate |
 | "my SWOLF / swim efficiency" | swim-swolf |
-| "sync / refresh / pull from Strava" | strava-sync |
+| "sync / refresh / pull from Strava" / "import my run" | strava-sync (file import from Downloads) |
 | "refresh metrics / how have my metrics changed / my profile" | athlete-snapshot |
 | "refresh memory / what do you remember about me" | memory-consolidate |
 | "my plan this week / what's on today / my training plan" | training-plan list |
@@ -125,14 +125,46 @@ mention briefly that you can also run the others.
 
 ---
 
+## Data ingestion protocol — file-based (the API is gone)
+
+**Strava removed free API access (subscriber-only since ~2026-07-01).** Any
+API sync returns `403 Application: Status Inactive`. We do **not** scrape or
+automate Strava login — that violates their Terms (automated access is
+prohibited "regardless of whether you are logged in"; see the
+`feedback_no_strava_scraping` and `strava_api_paywalled_import_pivot`
+memories). All new data now enters through **files the athlete exports by
+hand** and this project imports.
+
+**Whenever fresh activity data is needed** — at session start if the request
+depends on a recent run, on any `--sync`, or on a `Sync first` /
+`No activity found` recovery — use the **strava-sync** flow:
+
+1. **Import Downloads:** `python3 .claude/skills/strava-sync/scripts/import_downloads.py`
+   — imports every TCX/GPX in the Downloads folder (activities + streams +
+   laps + per-km splits), **deletes each file after importing**, dedups
+   against activities already stored (same start timestamp), and returns
+   `action_needed`.
+2. If `action_needed == "export_then_import"` (nothing new in Downloads):
+   open the browser with `open_export.py`, **ask the user to export the
+   activity and reply once it has downloaded, then wait** for their
+   confirmation.
+3. When the user confirms, re-run step 1 — the file imports and
+   `action_needed` becomes `none`. Then proceed with the original request.
+
+Never fall back to the old API path (`sync.py`, `--level ...`) — it no longer
+works. FIT is not parsed yet (needs a vetted dependency); TCX/GPX only.
+
+---
+
 ## Data layer
 
 ```
 strava/
-├── client.py          # Strava API client + token refresh + 429 retry
+├── client.py          # Strava API client (LEGACY — API access removed by Strava)
 ├── db.py              # SQLite schema + helpers
 ├── analytics.py       # Pure-function formulas (TRIMP, NP, TSS, GAP, Riegel, etc.)
-└── sync.py            # Bulk sync orchestration (summary/details/streams/zones)
+├── fileimport.py      # Canonical data-in: parse TCX/GPX + import_from_downloads()
+└── sync.py            # LEGACY API bulk sync — no longer used (Strava API is gone)
 ```
 
 ### Tables
@@ -406,11 +438,13 @@ Each `SKILL.md` includes a "On error: auto-recovery chain" section that maps
 specific error messages to a follow-up skill invocation. The standard chain:
 
 - `NO_TOKEN` / auth error → invoke **strava-setup**, then retry
-- `Sync first` / no data → invoke **strava-sync** with the right `--level`,
-  then retry
+- `Sync first` / `No activity found` / no data → invoke **strava-sync** (the
+  file-import flow: import Downloads; if nothing new, open the browser and wait
+  for the user to export, then import), then retry
 - Any other error → surface to the user
 
-The Skill tool is the mechanism: `Skill(skill="strava-sync", args="--level details --limit 50")`.
+The Skill tool is the mechanism: `Skill(skill="strava-sync")` (no `--level` —
+the API is gone; strava-sync now imports exported files from Downloads).
 
 You may chain at most ONCE per attempt, to avoid infinite loops.
 
