@@ -13,7 +13,7 @@ PROJECT_ROOT = os.path.abspath(
 sys.path.insert(0, PROJECT_ROOT)
 
 from strava.analytics import parse_iso
-from strava.client import StravaClient, get_default_db_path, output_error, output_json
+from strava.client import get_default_db_path, output_error, output_json
 from strava.db import (
     delete_planned_range,
     delete_planned_session,
@@ -27,7 +27,7 @@ from strava.db import (
     update_planned_session,
     upsert_planned_session,
 )
-from strava.sync import sync_summary
+from strava.fileimport import import_from_downloads
 
 
 REQUIRED_FIELDS = (
@@ -222,7 +222,7 @@ def auto_match(db_path: str, athlete_id: int, sessions: list[dict]) -> list[dict
             continue
         if p.get("status") not in ("planned", "skipped"):
             continue
-        if not p.get("plan_date") or p["plan_date"] > today:
+        if not p.get("plan_date") or p["plan_date"] >= today:
             continue
         candidates = by_day.get((p["plan_date"], p["sport_type"]), [])
         if candidates:
@@ -332,12 +332,17 @@ def cmd_add_bulk(db_path: str, athlete_id: int, args: argparse.Namespace) -> Non
 
 
 def maybe_sync(db_path: str, sync: bool) -> None:
-    """Run a lightweight summary sync if --sync was passed."""
+    """Ingest any newly-exported activity files from Downloads if --sync was passed.
+
+    Data-in is now file-based (Strava's API is gone): this imports whatever the
+    user has already exported into their Downloads folder. The interactive
+    "no files -> open the browser and wait" fallback is handled by the assistant,
+    not here -- this stays best-effort and non-fatal.
+    """
     if not sync:
         return
     try:
-        client = StravaClient(db_path)
-        sync_summary(client, db_path, days=14)
+        import_from_downloads(db_path, delete=True)
     except Exception:
         pass  # non-fatal: proceed with whatever the DB already has
 
@@ -517,6 +522,19 @@ def cmd_delete(db_path: str, _athlete_id: int, args: argparse.Namespace) -> None
     output_json({"deleted": True, "session_id": args.id})
 
 
+def cmd_reset(db_path: str, _athlete_id: int, args: argparse.Namespace) -> None:
+    """Revert a planned session to status='planned' and unlink any activity.
+
+    Useful when the auto-matcher made a wrong call (e.g. marked a same-day
+    session as skipped before the user actually trained, or linked the wrong
+    activity). Avoids hand-written SQL UPDATEs.
+    """
+    update_planned_session(
+        db_path, args.id, status="planned", actual_strava_id=None
+    )
+    output_json({"reset": True, "session_id": args.id, "status": "planned"})
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Persist training plans and measure adherence")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -578,6 +596,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_del = sub.add_parser("delete", help="Delete a planned session")
     p_del.add_argument("--id", type=int, required=True)
 
+    p_reset = sub.add_parser(
+        "reset",
+        help="Revert a session to status=planned and unlink any matched activity",
+    )
+    p_reset.add_argument("--id", type=int, required=True)
+
     return p
 
 
@@ -588,6 +612,7 @@ DISPATCH = {
     "review": cmd_review,
     "update": cmd_update,
     "delete": cmd_delete,
+    "reset": cmd_reset,
 }
 
 
